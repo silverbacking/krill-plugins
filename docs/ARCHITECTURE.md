@@ -4,128 +4,198 @@
 
 Krill és un sistema de comunicació segura entre usuaris (humans) i agents (IA) sobre el protocol Matrix.
 
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│    ┌─────────────┐              ┌─────────────────┐            │
+│    │  Krill App  │◄────────────►│  KrillMatrix    │            │
+│    │  (mòbil)    │    Matrix    │  (Synapse)      │            │
+│    │             │    HTTPS     │                 │            │
+│    └─────────────┘              └────────┬────────┘            │
+│                                          │                      │
+│                                          │ Matrix (local)       │
+│                                          │                      │
+│                                          ▼                      │
+│                                 ┌─────────────────┐            │
+│                                 │  OpenClaw       │            │
+│                                 │  Gateway        │            │
+│                                 │  (Clawdbot)     │            │
+│                                 │                 │            │
+│                                 │  ┌───────────┐  │            │
+│                                 │  │  Agent    │  │            │
+│                                 │  │  (Claude) │  │            │
+│                                 │  └───────────┘  │            │
+│                                 └─────────────────┘            │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Components
 
-### KrillMatrix Server
-Servidor Matrix modificat/estès amb capacitats Krill:
-- Marcatge d'agents mitjançant atributs especials (no replicables per humans)
-- Descobriment automàtic d'agents per a usuaris del mateix servidor
-- Gestió de pairings i tokens
-
 ### Krill App
-Aplicació client per a usuaris:
-- Descobreix agents disponibles al servidor
-- Gestiona pairings amb agents
-- Configura "senses" (permisos/capacitats dels agents)
-- Comunicació xifrada amb agents
+Aplicació mòbil (iOS/Android) que l'usuari fa servir per comunicar-se amb agents.
 
-### Agents
-Entitats IA marcades com a agents al servidor:
-- Atributs especials que els identifiquen (no falsificables per humans)
-- Poden ser descoberts pels usuaris del mateix servidor
-- Responen a pairings i dialoguen amb usuaris emparellats
+**Responsabilitats:**
+- Descobrir agents disponibles
+- Iniciar pairing amb agents
+- Enviar missatges autenticats
+- Gestionar senses (permisos)
+- Guardar tokens de forma segura
 
----
+### KrillMatrix Server
+Servidor Matrix (Synapse) accessible públicament via Cloudflare.
 
-## Flux de Pairing
+**Responsabilitats:**
+- Autenticació d'usuaris Matrix
+- Routing de missatges
+- Emmagatzematge d'state events (enrollment)
+- Federació (opcional)
 
-```
-┌─────────────┐                    ┌─────────────────┐                    ┌─────────────┐
-│  Krill App  │                    │  KrillMatrix    │                    │    Agent    │
-│  (usuari)   │                    │    Server       │                    │     (IA)    │
-└──────┬──────┘                    └────────┬────────┘                    └──────┬──────┘
-       │                                    │                                    │
-       │  1. Descobreix agents              │                                    │
-       │ ─────────────────────────────────► │                                    │
-       │                                    │                                    │
-       │  2. Llista d'agents disponibles    │                                    │
-       │ ◄───────────────────────────────── │                                    │
-       │                                    │                                    │
-       │  3. Selecciona agent per pairing   │                                    │
-       │ ─────────────────────────────────► │  4. Notifica pairing request       │
-       │                                    │ ──────────────────────────────────►│
-       │                                    │                                    │
-       │                                    │  5. Agent accepta/rebutja          │
-       │                                    │ ◄──────────────────────────────────│
-       │                                    │                                    │
-       │  6. Pairing result + TOKEN         │                                    │
-       │ ◄───────────────────────────────── │                                    │
-       │                                    │                                    │
-       │  7. Comunicació autenticada amb TOKEN                                   │
-       │ ◄─────────────────────────────────────────────────────────────────────►│
-       │                                    │                                    │
-```
+### OpenClaw Gateway
+Clawdbot running locally, connectat al servidor Matrix.
 
-## Regles de Pairing
+**Responsabilitats:**
+- Controlar l'agent IA (Claude)
+- Processar events Krill (pairing, senses)
+- Validar tokens d'autenticació
+- Emmagatzemar pairings
 
-1. **Per dispositiu**: El pairing és específic per a un usuari en un dispositiu concret
-2. **Nou dispositiu = nou pairing**: Si l'usuari canvia de dispositiu, ha de fer un nou pairing
-3. **Token compartit**: Usuari i agent comparteixen un token generat durant el pairing
-4. **Autenticació contínua**: Cada missatge es valida amb el token del pairing
+### Agent
+Compte Matrix controlat pel gateway (@jarvis:server).
 
-## Senses (Permisos)
-
-Després del pairing, l'usuari pot configurar "senses" - permisos i capacitats que atorga a l'agent:
-- Accés a calendari
-- Accés a ubicació
-- Accés a càmera/fotos
-- Notificacions
-- etc.
+**Responsabilitats:**
+- Respondre a missatges dels usuaris
+- Executar accions (eines, senses)
+- Mantenir context de conversa
 
 ---
 
-## Plugins
+## Flux Principal
+
+### 1. Enrollment
+```
+Gateway → Matrix: PUT state event ai.krill.agent
+                  (a la room #krill-agents)
+```
+
+### 2. Discovery
+```
+App → Matrix: GET state de #krill-agents
+           ← Llista d'agents amb hash de verificació
+```
+
+### 3. Pairing
+```
+App → Agent: ai.krill.pair.request
+         ← ai.krill.pair.response + token
+```
+
+### 4. Communication
+```
+App → Agent: m.room.message + ai.krill.auth.token
+         ← m.room.message (resposta)
+```
+
+### 5. Senses
+```
+App → Agent: ai.krill.senses.update
+         ← ai.krill.senses.updated
+
+Agent → App: ai.krill.sense.request
+          ← ai.krill.sense.data
+```
+
+---
+
+## Plugins Krill
 
 ### krill-enrollment-plugin
-Permet que un OpenClaw gateway registri els seus agents al servidor KrillMatrix:
-- El gateway s'autentica amb el servidor
-- Envia la llista d'agents que controla
-- El servidor marca els agents amb atributs verificables
-- Els agents queden disponibles per descobriment/pairing
+**Funció:** Registra agents al servidor Matrix
 
-**Flux d'enrollment:**
-```
-┌─────────────┐                    ┌─────────────────┐
-│  OpenClaw   │                    │  KrillMatrix    │
-│  Gateway    │                    │    Server       │
-└──────┬──────┘                    └────────┬────────┘
-       │                                    │
-       │  1. Auth gateway (credentials)     │
-       │ ─────────────────────────────────► │
-       │                                    │
-       │  2. Gateway token                  │
-       │ ◄───────────────────────────────── │
-       │                                    │
-       │  3. Enroll agent (@jarvis:...)     │
-       │ ─────────────────────────────────► │
-       │                                    │
-       │  4. Agent marked + certificate     │
-       │ ◄───────────────────────────────── │
-       │                                    │
+**Events:**
+- Publica `ai.krill.agent` state events
+- Genera verification hash amb HMAC
+
+**Config:**
+```yaml
+gatewayId: "gateway-001"
+gatewaySecret: "secret-key"
+agents:
+  - mxid: "@jarvis:server"
+    displayName: "Jarvis"
 ```
 
 ### krill-pairing-plugin
-Gestiona el flux complet de pairing:
-- Registre d'agents al servidor (marcatge amb atributs especials)
-- Descobriment d'agents per usuaris
-- Handshake de pairing
-- Generació i emmagatzematge de tokens
-- Gestió de dispositius (un pairing per dispositiu)
+**Funció:** Gestiona pairings usuari-agent
+
+**Events:**
+- `ai.krill.pair.request` → Processa
+- `ai.krill.pair.response` → Envia
+- `ai.krill.pair.revoke` → Processa
+
+**Storage:**
+- Pairings amb hash del token
+- Senses per pairing
 
 ### krill-safe-plugin
-Validació de seguretat per a cada conversa:
-- Verificació de token en cada missatge
-- Validació de sessió activa
-- Comprovació de permisos (senses)
-- Rebuig de missatges no autenticats
+**Funció:** Valida autenticació de missatges
+
+**Intercepta:**
+- Tots els missatges Matrix entrants
+- Extreu `ai.krill.auth.pairing_token`
+- Valida contra pairings
+
+**Accions:**
+- ✅ Token vàlid → Passa a l'agent
+- ❌ Token invàlid → `ai.krill.auth.required`
 
 ---
 
-## Atributs d'Agent (No Replicables)
+## Seguretat
 
-Els agents es marquen amb atributs que els humans no poden replicar:
-- Signatura criptogràfica del servidor
-- Certificat d'agent emès pel servidor
-- Metadades verificables a nivell de protocol
+### Autenticació d'Agents
+- Hash = HMAC-SHA256(secret, agent_mxid|gateway_id|timestamp)
+- El secret mai surt del gateway
+- L'app pot verificar agents
 
-Això garanteix que un humà no pot fer-se passar per un agent.
+### Tokens de Pairing
+- Format: `krill_tk_v1_{random_32_bytes_base64url}`
+- Es retorna només UN cop
+- Es guarda com a hash al gateway
+- L'app el guarda al Keychain/Keystore
+
+### Transport
+- Matrix usa HTTPS
+- Cloudflare proporciona TLS
+- E2EE opcional amb Matrix encryption
+
+---
+
+## Deployment
+
+### Requisits
+- Synapse server (o altre Matrix homeserver)
+- Clawdbot amb plugins Krill
+- Cloudflare tunnel (o altre reverse proxy)
+
+### Configuració Recomanada
+```
+Internet
+    │
+    ▼
+Cloudflare Tunnel
+    │
+    ├──► matrix.example.com (Synapse, port 8008)
+    │
+    └──► (NO gateway exposed - només Matrix!)
+```
+
+El gateway NO s'exposa a internet. Tot passa per Matrix.
+
+---
+
+## Documents Relacionats
+
+- [FULL-PROTOCOL.md](FULL-PROTOCOL.md) - Especificació completa
+- [ARCHITECTURE-MATRIX.md](ARCHITECTURE-MATRIX.md) - Detalls tècnics Matrix
+- [KRILL-APP-FLOW.md](KRILL-APP-FLOW.md) - Flux de l'app
