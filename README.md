@@ -141,20 +141,19 @@ clawdbot plugins install -l ./plugins/krill-safe-plugin
 krill-plugins/
 ├── docs/
 │   ├── ARCHITECTURE.md
-│   ├── ARCHITECTURE-MATRIX.md
-│   ├── KRILL-APP-FLOW.md
-│   └── GATEWAY-INTEGRATION.md
-├── plugins/
-│   ├── krill-enrollment-plugin/
-│   │   ├── src/index.ts
-│   │   ├── clawdbot.plugin.json
-│   │   └── README.md
-│   ├── krill-pairing-plugin/
-│   │   ├── src/index.ts
-│   │   ├── PROTOCOL.md
-│   │   └── README.md
-│   └── krill-safe-plugin/
-│       └── README.md
+│   ├── FULL-PROTOCOL.md
+│   ├── DEPLOYMENT-TIERS.md
+│   └── SECURITY-ANALYSIS.md
+├── krill-enrollment-plugin/
+│   ├── src/index.ts
+│   ├── clawdbot.plugin.json
+│   └── README.md
+├── krill-pairing-plugin/
+│   ├── src/index.ts
+│   ├── PROTOCOL.md
+│   └── README.md
+├── krill-safe-plugin/
+│   └── README.md
 └── README.md
 ```
 
