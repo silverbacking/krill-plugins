@@ -231,9 +231,8 @@ async function handleKrillRequest(
     return true;
   }
 
-  // Unknown krill path
-  sendJson(res, 404, { error: "Not found" });
-  return true;
+  // Not our path - let other plugins handle it
+  return false;
 }
 
 const plugin = {
