@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
 import crypto from "crypto";
 
@@ -59,14 +60,8 @@ interface VerifyRequest {
   enrolled_at: number;
 }
 
-interface EnrollRequest {
-  agent_mxid: string;
-  display_name: string;
-  description?: string;
-  capabilities?: string[];
-}
-
 let pluginConfig: KrillConfig | null = null;
+let logger: { info: (msg: string) => void; warn: (msg: string) => void } | null = null;
 
 /**
  * Generate verification hash for an agent
@@ -82,156 +77,163 @@ function generateHash(
 }
 
 /**
- * Handle POST /krill/verify
- * Validates that an agent hash is authentic
+ * Read JSON body from request
  */
-async function handleVerify(req: any, res: any): Promise<void> {
-  if (!pluginConfig) {
-    res.status(500).json({ valid: false, error: "Plugin not configured" });
-    return;
-  }
-
-  try {
-    const body: VerifyRequest = req.body;
-    const { agent_mxid, gateway_id, verification_hash, enrolled_at } = body;
-
-    // Check gateway_id matches
-    if (gateway_id !== pluginConfig.gatewayId) {
-      res.json({ valid: false, error: "Gateway ID mismatch" });
-      return;
-    }
-
-    // Recalculate hash
-    const expectedHash = generateHash(
-      pluginConfig.gatewaySecret,
-      agent_mxid,
-      gateway_id,
-      enrolled_at
-    );
-
-    if (verification_hash === expectedHash) {
-      // Find agent in config
-      const agent = pluginConfig.agents?.find((a) => a.mxid === agent_mxid);
-      res.json({
-        valid: true,
-        agent: agent
-          ? {
-              mxid: agent.mxid,
-              display_name: agent.displayName,
-              description: agent.description,
-              capabilities: agent.capabilities,
-              status: "online",
-            }
-          : null,
-      });
-    } else {
-      res.json({ valid: false, error: "Hash mismatch" });
-    }
-  } catch (error) {
-    res.status(400).json({ valid: false, error: "Invalid request" });
-  }
-}
-
-/**
- * Handle POST /krill/enroll
- * Enrolls an agent and returns the verification hash
- */
-async function handleEnroll(req: any, res: any): Promise<void> {
-  if (!pluginConfig) {
-    res.status(500).json({ success: false, error: "Plugin not configured" });
-    return;
-  }
-
-  try {
-    const body: EnrollRequest = req.body;
-    const { agent_mxid, display_name, description, capabilities } = body;
-
-    const enrolled_at = Math.floor(Date.now() / 1000);
-    const verification_hash = generateHash(
-      pluginConfig.gatewaySecret,
-      agent_mxid,
-      pluginConfig.gatewayId,
-      enrolled_at
-    );
-
-    // Return the enrollment data (Matrix state event should be sent separately)
-    res.json({
-      success: true,
-      enrollment: {
-        type: "ai.krill.agent",
-        state_key: agent_mxid,
-        content: {
-          gateway_id: pluginConfig.gatewayId,
-          gateway_url: pluginConfig.gatewayUrl,
-          display_name,
-          description,
-          capabilities: capabilities || ["chat"],
-          enrolled_at,
-          verification_hash,
-        },
-      },
+async function readJsonBody(req: IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON"));
+      }
     });
-  } catch (error) {
-    res.status(400).json({ success: false, error: "Invalid request" });
-  }
-}
-
-/**
- * Handle GET /krill/agents
- * Lists all enrolled agents with their hashes
- */
-async function handleListAgents(req: any, res: any): Promise<void> {
-  if (!pluginConfig) {
-    res.status(500).json({ error: "Plugin not configured" });
-    return;
-  }
-
-  const agents = (pluginConfig.agents || []).map((agent) => {
-    const enrolled_at = Math.floor(Date.now() / 1000); // Would be stored in real impl
-    const verification_hash = generateHash(
-      pluginConfig!.gatewaySecret,
-      agent.mxid,
-      pluginConfig!.gatewayId,
-      enrolled_at
-    );
-
-    return {
-      mxid: agent.mxid,
-      display_name: agent.displayName,
-      description: agent.description,
-      capabilities: agent.capabilities || ["chat"],
-      gateway_id: pluginConfig!.gatewayId,
-      gateway_url: pluginConfig!.gatewayUrl,
-      enrolled_at,
-      verification_hash,
-    };
+    req.on("error", reject);
   });
-
-  res.json({ agents });
 }
 
 /**
- * HTTP request handler
+ * Send JSON response
  */
-function handleHttpRequest(req: any, res: any): boolean {
-  const { method, path } = req;
+function sendJson(res: ServerResponse, status: number, data: any): void {
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(data));
+}
 
-  if (path === "/krill/verify" && method === "POST") {
-    handleVerify(req, res);
+/**
+ * HTTP request handler for Krill endpoints
+ */
+async function handleKrillRequest(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<boolean> {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const path = url.pathname;
+
+  // Only handle /krill/* paths
+  if (!path.startsWith("/krill/")) {
+    return false;
+  }
+
+  logger?.info(`[krill] ${req.method} ${path}`);
+
+  if (!pluginConfig) {
+    sendJson(res, 500, { error: "Plugin not configured" });
     return true;
   }
 
-  if (path === "/krill/enroll" && method === "POST") {
-    handleEnroll(req, res);
+  // POST /krill/verify
+  if (path === "/krill/verify" && req.method === "POST") {
+    try {
+      const body: VerifyRequest = await readJsonBody(req);
+      const { agent_mxid, gateway_id, verification_hash, enrolled_at } = body;
+
+      // Check gateway_id matches
+      if (gateway_id !== pluginConfig.gatewayId) {
+        sendJson(res, 200, { valid: false, error: "Gateway ID mismatch" });
+        return true;
+      }
+
+      // Recalculate hash
+      const expectedHash = generateHash(
+        pluginConfig.gatewaySecret,
+        agent_mxid,
+        gateway_id,
+        enrolled_at
+      );
+
+      if (verification_hash === expectedHash) {
+        const agent = pluginConfig.agents?.find((a) => a.mxid === agent_mxid);
+        sendJson(res, 200, {
+          valid: true,
+          agent: agent
+            ? {
+                mxid: agent.mxid,
+                display_name: agent.displayName,
+                description: agent.description,
+                capabilities: agent.capabilities,
+                status: "online",
+              }
+            : null,
+        });
+      } else {
+        sendJson(res, 200, { valid: false, error: "Hash mismatch" });
+      }
+    } catch (error) {
+      sendJson(res, 400, { valid: false, error: "Invalid request" });
+    }
     return true;
   }
 
-  if (path === "/krill/agents" && method === "GET") {
-    handleListAgents(req, res);
+  // POST /krill/enroll
+  if (path === "/krill/enroll" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { agent_mxid, display_name, description, capabilities } = body;
+
+      const enrolled_at = Math.floor(Date.now() / 1000);
+      const verification_hash = generateHash(
+        pluginConfig.gatewaySecret,
+        agent_mxid,
+        pluginConfig.gatewayId,
+        enrolled_at
+      );
+
+      sendJson(res, 200, {
+        success: true,
+        enrollment: {
+          type: "ai.krill.agent",
+          state_key: agent_mxid,
+          content: {
+            gateway_id: pluginConfig.gatewayId,
+            gateway_url: pluginConfig.gatewayUrl,
+            display_name,
+            description,
+            capabilities: capabilities || ["chat"],
+            enrolled_at,
+            verification_hash,
+          },
+        },
+      });
+    } catch (error) {
+      sendJson(res, 400, { success: false, error: "Invalid request" });
+    }
     return true;
   }
 
-  return false;
+  // GET /krill/agents
+  if (path === "/krill/agents" && req.method === "GET") {
+    const agents = (pluginConfig.agents || []).map((agent) => {
+      const enrolled_at = Math.floor(Date.now() / 1000);
+      const verification_hash = generateHash(
+        pluginConfig!.gatewaySecret,
+        agent.mxid,
+        pluginConfig!.gatewayId,
+        enrolled_at
+      );
+
+      return {
+        mxid: agent.mxid,
+        display_name: agent.displayName,
+        description: agent.description,
+        capabilities: agent.capabilities || ["chat"],
+        gateway_id: pluginConfig!.gatewayId,
+        gateway_url: pluginConfig!.gatewayUrl,
+        enrolled_at,
+        verification_hash,
+      };
+    });
+
+    sendJson(res, 200, { agents });
+    return true;
+  }
+
+  // Unknown krill path
+  sendJson(res, 404, { error: "Not found" });
+  return true;
 }
 
 const plugin = {
@@ -246,25 +248,28 @@ const plugin = {
   },
 
   register(api: ClawdbotPluginApi) {
+    logger = api.logger;
+    
     // Get plugin config
     const config = api.config?.plugins?.entries?.["krill-enrollment"]?.config as KrillConfig | undefined;
     if (config) {
       pluginConfig = config;
       api.logger.info(`Krill enrollment plugin loaded for gateway: ${config.gatewayId}`);
+      api.logger.info(`Krill agents configured: ${config.agents?.length || 0}`);
     } else {
       api.logger.warn("Krill enrollment plugin: no config found");
     }
 
-    // Register HTTP handlers
-    api.registerHttpHandler(handleHttpRequest);
+    // Register HTTP handler
+    api.registerHttpHandler(handleKrillRequest);
 
-    // Register CLI command for enrollment
+    // Register CLI commands
     api.registerCli?.(({ program }) => {
       const krill = program.command("krill").description("Krill enrollment commands");
 
       krill
         .command("enroll <mxid>")
-        .description("Enroll an agent and get the Matrix state event")
+        .description("Generate enrollment state event for an agent")
         .option("-n, --name <name>", "Display name")
         .option("-d, --description <desc>", "Description")
         .action(async (mxid: string, opts: any) => {
@@ -295,22 +300,21 @@ const plugin = {
             },
           };
 
-          console.log("\nMatrix State Event to publish:\n");
+          console.log("\n📋 Matrix State Event:\n");
           console.log(JSON.stringify(stateEvent, null, 2));
-          console.log("\nUse this command to publish to Matrix:");
-          console.log(`curl -X PUT -H "Authorization: Bearer \$TOKEN" \\`);
-          console.log(`  -H "Content-Type: application/json" \\`);
-          console.log(`  -d '${JSON.stringify(stateEvent.content)}' \\`);
-          console.log(`  "https://matrix.example.com/_matrix/client/v3/rooms/\$ROOM_ID/state/${stateEvent.type}/${encodeURIComponent(mxid)}"`);
         });
 
-      krill.command("verify-hash").description("Test hash verification").action(() => {
+      krill.command("status").description("Show Krill plugin status").action(() => {
         if (!pluginConfig) {
           console.error("Krill plugin not configured");
           return;
         }
-        console.log(`Gateway ID: ${pluginConfig.gatewayId}`);
-        console.log(`Configured agents: ${pluginConfig.agents?.length || 0}`);
+        console.log(`\n🔑 Gateway ID: ${pluginConfig.gatewayId}`);
+        console.log(`🌐 Gateway URL: ${pluginConfig.gatewayUrl || "(not set)"}`);
+        console.log(`🤖 Agents: ${pluginConfig.agents?.length || 0}`);
+        pluginConfig.agents?.forEach((a, i) => {
+          console.log(`   ${i + 1}. ${a.displayName} (${a.mxid})`);
+        });
       });
     }, { commands: ["krill"] });
   },
