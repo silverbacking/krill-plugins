@@ -1,0 +1,50 @@
+{
+  "id": "krill-enrollment",
+  "name": "Krill Enrollment",
+  "version": "0.1.0",
+  "description": "Krill agent enrollment and verification for OpenClaw gateways",
+  "author": "Silverbacking",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "gatewayId": {
+        "type": "string",
+        "description": "Unique identifier for this gateway"
+      },
+      "gatewaySecret": {
+        "type": "string",
+        "description": "Secret key for generating verification hashes"
+      },
+      "gatewayUrl": {
+        "type": "string",
+        "description": "Public URL of this gateway"
+      },
+      "agentsRoomId": {
+        "type": "string",
+        "description": "Matrix room ID for publishing enrolled agents"
+      },
+      "agents": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "mxid": { "type": "string" },
+            "displayName": { "type": "string" },
+            "description": { "type": "string" },
+            "capabilities": { 
+              "type": "array", 
+              "items": { "type": "string" } 
+            }
+          },
+          "required": ["mxid", "displayName"]
+        }
+      }
+    },
+    "required": ["gatewayId", "gatewaySecret"]
+  },
+  "uiHints": {
+    "gatewaySecret": { "label": "Gateway Secret", "sensitive": true },
+    "gatewayId": { "label": "Gateway ID", "placeholder": "clawdbot-001" },
+    "gatewayUrl": { "label": "Gateway URL", "placeholder": "https://gateway.example.com" }
+  }
+}

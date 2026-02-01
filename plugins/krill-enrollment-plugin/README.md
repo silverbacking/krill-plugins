@@ -1,6 +1,49 @@
 # krill-enrollment-plugin
 
-Plugin per registrar agents d'un OpenClaw gateway al servidor KrillMatrix.
+Plugin de Clawdbot per registrar agents d'un OpenClaw gateway al servidor KrillMatrix.
+
+## Instal·lació
+
+```bash
+clawdbot plugins install -l ./plugins/krill-enrollment-plugin
+```
+
+## Configuració
+
+```yaml
+plugins:
+  entries:
+    krill-enrollment:
+      enabled: true
+      config:
+        gatewayId: "clawdbot-001"
+        gatewaySecret: "your-super-secret-key"
+        gatewayUrl: "https://gateway.silverbacking.ai"
+        agentsRoomId: "!abc123:matrix.silverbacking.ai"
+        agents:
+          - mxid: "@jarvis:matrix.silverbacking.ai"
+            displayName: "Jarvis"
+            description: "Personal AI assistant"
+            capabilities: ["chat", "senses", "calendar"]
+```
+
+## Endpoints HTTP
+
+| Endpoint | Mètode | Descripció |
+|----------|--------|------------|
+| `/krill/verify` | POST | Verifica un hash d'agent |
+| `/krill/enroll` | POST | Genera enrollment data per un agent |
+| `/krill/agents` | GET | Llista tots els agents configurats |
+
+## CLI
+
+```bash
+# Generar state event per un agent
+clawdbot krill enroll @jarvis:matrix.silverbacking.ai --name "Jarvis"
+
+# Verificar configuració
+clawdbot krill verify-hash
+```
 
 ## Funció
 

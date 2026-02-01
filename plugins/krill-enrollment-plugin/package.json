@@ -1,0 +1,16 @@
+{
+  "name": "@silverbacking/krill-enrollment",
+  "version": "0.1.0",
+  "description": "Krill agent enrollment and verification plugin for Clawdbot",
+  "type": "module",
+  "main": "src/index.ts",
+  "clawdbot": {
+    "extensions": ["./src/index.ts"]
+  },
+  "keywords": ["clawdbot", "plugin", "krill", "matrix", "enrollment"],
+  "author": "Silverbacking",
+  "license": "MIT",
+  "peerDependencies": {
+    "clawdbot": ">=2026.1.0"
+  }
+}
