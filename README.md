@@ -10,9 +10,15 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system design.
 
 | Plugin | Description | Status |
 |--------|-------------|--------|
+| `krill-enrollment-plugin` | Gateway registers agents with server (marking) | 🚧 In Progress |
 | `krill-pairing-plugin` | Agent discovery, pairing flow, token generation | 🔨 Planned |
 | `krill-safe-plugin` | Per-message authentication and validation | 🔨 Planned |
-| `krill-matrix-plugin` | Matrix protocol bridge | 🔨 Planned |
+
+## Development Order
+
+1. **enrollment** → Marca agents al servidor (prerequisit per tot)
+2. **pairing** → Usuaris s'emparellen amb agents marcats  
+3. **safe** → Valida cada missatge amb token del pairing
 
 ## Key Concepts
 

@@ -76,6 +76,34 @@ Després del pairing, l'usuari pot configurar "senses" - permisos i capacitats q
 
 ## Plugins
 
+### krill-enrollment-plugin
+Permet que un OpenClaw gateway registri els seus agents al servidor KrillMatrix:
+- El gateway s'autentica amb el servidor
+- Envia la llista d'agents que controla
+- El servidor marca els agents amb atributs verificables
+- Els agents queden disponibles per descobriment/pairing
+
+**Flux d'enrollment:**
+```
+┌─────────────┐                    ┌─────────────────┐
+│  OpenClaw   │                    │  KrillMatrix    │
+│  Gateway    │                    │    Server       │
+└──────┬──────┘                    └────────┬────────┘
+       │                                    │
+       │  1. Auth gateway (credentials)     │
+       │ ─────────────────────────────────► │
+       │                                    │
+       │  2. Gateway token                  │
+       │ ◄───────────────────────────────── │
+       │                                    │
+       │  3. Enroll agent (@jarvis:...)     │
+       │ ─────────────────────────────────► │
+       │                                    │
+       │  4. Agent marked + certificate     │
+       │ ◄───────────────────────────────── │
+       │                                    │
+```
+
 ### krill-pairing-plugin
 Gestiona el flux complet de pairing:
 - Registre d'agents al servidor (marcatge amb atributs especials)
