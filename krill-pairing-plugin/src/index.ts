@@ -292,6 +292,75 @@ async function handleValidate(req: IncomingMessage, res: ServerResponse): Promis
 }
 
 /**
+ * Handle Matrix ai.krill.pair.complete events
+ * When a user pairs with an agent via the Krill app, send a welcome notification
+ */
+async function handleMatrixPairingEvent(event: any): Promise<boolean> {
+  // Only handle ai.krill.pair.complete events
+  if (event.type !== "ai.krill.pair.complete") {
+    return false;
+  }
+  
+  try {
+    const content = event.content || {};
+    const userId = content.user_id || event.sender;
+    const roomId = event.room_id;
+    
+    logger?.info(`Received pairing event from ${userId} in room ${roomId}`);
+    
+    // Fetch user profile from Matrix
+    let displayName = userId.split(":")[0].replace("@", "");
+    let avatarUrl: string | null = null;
+    
+    if (matrixApi?.getMatrixClient) {
+      try {
+        const client = matrixApi.getMatrixClient();
+        if (client) {
+          const profile = await client.getProfileInfo(userId);
+          displayName = profile?.displayname || displayName;
+          avatarUrl = profile?.avatar_url || null;
+        }
+      } catch (e) {
+        logger?.warn(`Failed to fetch profile for ${userId}: ${e}`);
+      }
+    }
+    
+    // Format welcome message for the agent
+    const welcomeMessage = `🦐 **New Krill Connection!**
+
+**${displayName}** just paired with you via Krill App.
+
+• **User ID:** ${userId}
+• **Platform:** ${content.platform || "unknown"}
+• **Time:** ${new Date().toLocaleString()}
+
+Say hello and introduce yourself! 👋`;
+
+    // Send message to the room (this will be seen by the agent)
+    if (matrixApi?.sendMatrixMessage) {
+      await matrixApi.sendMatrixMessage(roomId, welcomeMessage);
+      logger?.info(`Sent welcome notification to room ${roomId}`);
+    } else if (matrixApi?.getMatrixClient) {
+      const client = matrixApi.getMatrixClient();
+      if (client) {
+        await client.sendMessage(roomId, {
+          msgtype: "m.text",
+          body: welcomeMessage,
+          format: "org.matrix.custom.html",
+          formatted_body: welcomeMessage.replace(/\*\*(.*?)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>"),
+        });
+        logger?.info(`Sent welcome notification to room ${roomId} via client`);
+      }
+    }
+    
+    return true; // Event handled
+  } catch (error) {
+    logger?.warn(`Error handling pairing event: ${error}`);
+    return false;
+  }
+}
+
+/**
  * HTTP request handler
  */
 async function handleKrillPairingRequest(
@@ -337,6 +406,8 @@ async function handleKrillPairingRequest(
   return false;
 }
 
+let matrixApi: any = null;
+
 const plugin = {
   id: "krill-pairing",
   name: "Krill Pairing",
@@ -348,6 +419,7 @@ const plugin = {
 
   register(api: ClawdbotPluginApi) {
     logger = api.logger;
+    matrixApi = api;
 
     // Get config
     const config = api.config?.plugins?.entries?.["krill-pairing"]?.config as PairingConfig | undefined;
@@ -365,6 +437,14 @@ const plugin = {
 
     // Register HTTP handler
     api.registerHttpHandler(handleKrillPairingRequest);
+    
+    // Register Matrix event handler for pairing events
+    if (api.registerMatrixEventHandler) {
+      api.registerMatrixEventHandler(handleMatrixPairingEvent);
+      api.logger.info("Registered Matrix event handler for ai.krill.pair.complete");
+    } else {
+      api.logger.warn("registerMatrixEventHandler not available - pairing notifications won't work");
+    }
 
     // Register CLI commands
     api.registerCli?.(({ program }) => {
