@@ -1,0 +1,32 @@
+{
+  "name": "@silverbacking/krill-matrix",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Krill-enabled Matrix channel plugin (fork of @clawdbot/matrix)",
+  "clawdbot": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "matrix",
+      "label": "Matrix (Krill)",
+      "selectionLabel": "Matrix (Krill-enabled)",
+      "docsPath": "/channels/matrix",
+      "docsLabel": "matrix",
+      "blurb": "Matrix with Krill protocol support (verify, pairing, senses)",
+      "order": 69,
+      "quickstartAllowFrom": true,
+      "preferOver": ["matrix"]
+    }
+  },
+  "dependencies": {
+    "@matrix-org/matrix-sdk-crypto-nodejs": "^0.4.0",
+    "markdown-it": "14.1.0",
+    "matrix-bot-sdk": "0.8.0",
+    "music-metadata": "^11.10.6",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "clawdbot": ">=2026.1.0"
+  }
+}
