@@ -1,10 +1,10 @@
 {
   "id": "krill-update",
   "name": "Krill Update",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Receives plugin updates from Krill central and auto-updates",
-  "main": "src/index.ts",
-  "config": {
+  "main": "index.ts",
+  "configSchema": {
     "type": "object",
     "properties": {
       "apiUrl": {
