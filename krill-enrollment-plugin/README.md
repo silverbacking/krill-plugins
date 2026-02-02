@@ -41,9 +41,51 @@ plugins:
 # Generar state event per un agent
 clawdbot krill enroll @jarvis:matrix.silverbacking.ai --name "Jarvis"
 
-# Verificar configuració
-clawdbot krill verify-hash
+# Veure estat del plugin
+clawdbot krill status
 ```
+
+## Verificació via Matrix
+
+El plugin també gestiona verificacions via Matrix (sense HTTP).
+
+### Event Types
+
+**Request (App → Agent):**
+```json
+{
+  "type": "ai.krill.verify.request",
+  "content": {
+    "challenge": "uuid-random",
+    "timestamp": 1706820000
+  }
+}
+```
+
+**Response (Agent → App):**
+```json
+{
+  "type": "ai.krill.verify.response",
+  "content": {
+    "challenge": "uuid-random",
+    "verified": true,
+    "agent": {
+      "mxid": "@jarvis:matrix...",
+      "display_name": "Jarvis",
+      "capabilities": ["chat", "senses"]
+    }
+  }
+}
+```
+
+### Flux
+
+1. Krill App envia `ai.krill.verify.request` per DM a l'agent
+2. Gateway detecta l'event i processa
+3. Gateway respon amb `ai.krill.verify.response`
+4. App valida que el challenge coincideix
+
+Veure `docs/VERIFICATION-PROTOCOL.md` per més detalls.
 
 ## Funció
 
