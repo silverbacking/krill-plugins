@@ -181,6 +181,34 @@ Respost pel gateway.
 
 ---
 
+## Implementació Actual
+
+### Format del Missatge
+
+Krill App envia un missatge normal (`m.room.message`) amb format JSON:
+
+```json
+{
+  "msgtype": "m.text",
+  "body": "{\"type\":\"ai.krill.verify.request\",\"content\":{\"challenge\":\"uuid-abc\",\"timestamp\":1706820000}}"
+}
+```
+
+O format simplificat:
+```
+KRILL_VERIFY:uuid-challenge:timestamp
+```
+
+### Processament al Gateway
+
+El plugin detecta missatges amb aquest format i genera la resposta automàticament.
+
+**Nota:** Per a una integració completa, caldria modificar Clawdbot core per interceptar 
+aquests missatges abans que arribin a l'agent. Per ara, l'agent (Claude) és conscient 
+d'aquest patró i respon correctament.
+
+---
+
 ## Integració amb el flux de l'app
 
 ```

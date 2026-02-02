@@ -2,6 +2,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
 import crypto from "crypto";
 
+// Import verify handler
+import { processVerifyRequest, isVerifyRequest, createVerifyResponseEvent } from "./verify-handler.js";
+
 // Plugin config schema
 const configSchema = {
   type: "object",
@@ -61,6 +64,7 @@ interface VerifyRequest {
 }
 
 let pluginConfig: KrillConfig | null = null;
+let pluginApi: ClawdbotPluginApi | null = null;
 let logger: { info: (msg: string) => void; warn: (msg: string) => void } | null = null;
 
 /**
@@ -235,6 +239,63 @@ async function handleKrillRequest(
   return false;
 }
 
+/**
+ * Check if a message is a Krill verify request
+ * Supports both JSON format and special message format
+ */
+function parseVerifyRequest(text: string): { challenge: string; timestamp: number } | null {
+  // Try JSON format
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed.type === "ai.krill.verify.request" && parsed.content?.challenge) {
+      return {
+        challenge: parsed.content.challenge,
+        timestamp: parsed.content.timestamp || Math.floor(Date.now() / 1000),
+      };
+    }
+    if (parsed.challenge) {
+      return {
+        challenge: parsed.challenge,
+        timestamp: parsed.timestamp || Math.floor(Date.now() / 1000),
+      };
+    }
+  } catch {}
+
+  // Try special format: KRILL_VERIFY:challenge:timestamp
+  const match = text.match(/^KRILL_VERIFY:([a-zA-Z0-9-]+):?(\d+)?$/);
+  if (match) {
+    return {
+      challenge: match[1],
+      timestamp: match[2] ? parseInt(match[2]) : Math.floor(Date.now() / 1000),
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Generate verify response text
+ */
+function generateVerifyResponseText(challenge: string, agentConfig: KrillConfig): string {
+  const agent = agentConfig.agents?.[0];
+  const response = {
+    type: "ai.krill.verify.response",
+    content: {
+      challenge,
+      verified: true,
+      agent: agent ? {
+        mxid: agent.mxid,
+        display_name: agent.displayName,
+        gateway_id: agentConfig.gatewayId,
+        capabilities: agent.capabilities || ["chat"],
+        status: "online",
+      } : null,
+      responded_at: Math.floor(Date.now() / 1000),
+    },
+  };
+  return JSON.stringify(response);
+}
+
 const plugin = {
   id: "krill-enrollment",
   name: "Krill Enrollment",
@@ -248,6 +309,7 @@ const plugin = {
 
   register(api: ClawdbotPluginApi) {
     logger = api.logger;
+    pluginApi = api;
     
     // Get plugin config
     const config = api.config?.plugins?.entries?.["krill-enrollment"]?.config as KrillConfig | undefined;
@@ -261,6 +323,27 @@ const plugin = {
 
     // Register HTTP handler
     api.registerHttpHandler(handleKrillRequest);
+
+    // Register auto-reply command for verify requests
+    // This intercepts messages before they reach the agent
+    api.registerCommand?.({
+      name: "krill-verify",
+      description: "Handle Krill verification requests",
+      acceptsArgs: true,
+      requireAuth: false, // Allow anyone to verify
+      handler: (ctx) => {
+        if (!pluginConfig) {
+          return { text: JSON.stringify({ type: "ai.krill.verify.response", content: { verified: false, error: "NOT_CONFIGURED" } }) };
+        }
+
+        const verifyReq = parseVerifyRequest(ctx.args || "");
+        if (!verifyReq) {
+          return { text: JSON.stringify({ type: "ai.krill.verify.response", content: { verified: false, error: "INVALID_REQUEST" } }) };
+        }
+
+        return { text: generateVerifyResponseText(verifyReq.challenge, pluginConfig) };
+      },
+    });
 
     // Register CLI commands
     api.registerCli?.(({ program }) => {
@@ -314,6 +397,15 @@ const plugin = {
         pluginConfig.agents?.forEach((a, i) => {
           console.log(`   ${i + 1}. ${a.displayName} (${a.mxid})`);
         });
+      });
+
+      krill.command("test-verify <challenge>").description("Test verification response").action((challenge: string) => {
+        if (!pluginConfig) {
+          console.error("Krill plugin not configured");
+          return;
+        }
+        console.log("\n📋 Verify Response:\n");
+        console.log(generateVerifyResponseText(challenge, pluginConfig));
       });
     }, { commands: ["krill"] });
   },
