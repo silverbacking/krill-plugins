@@ -67,8 +67,57 @@ export function registerMatrixMonitorEvents(params: {
     logVerboseMessage(`matrix: join room=${roomId} id=${eventId}`);
   });
 
-  client.on("room.event", (roomId: string, event: MatrixRawEvent) => {
+  client.on("room.event", async (roomId: string, event: MatrixRawEvent) => {
     const eventType = event?.type ?? "unknown";
+    
+    // === KRILL PAIRING COMPLETE HANDLER ===
+    if (eventType === "ai.krill.pair.complete") {
+      const senderId = event?.sender ?? "unknown";
+      const selfUserId = await client.getUserId();
+      
+      // Don't process our own events
+      if (senderId === selfUserId) return;
+      
+      logVerboseMessage(`matrix: krill pairing complete from ${senderId} in ${roomId}`);
+      
+      try {
+        // Fetch user profile
+        let displayName = senderId.split(":")[0].replace("@", "");
+        try {
+          const profile = await client.getUserProfile(senderId);
+          displayName = profile?.displayname || displayName;
+        } catch {}
+        
+        const content = event?.content as { 
+          user_id?: string; 
+          platform?: string;
+          paired_at?: string;
+        } | undefined;
+        
+        // Send welcome notification as a message to the room
+        const welcomeMessage = `🦐 **New Krill Connection!**
+
+**${displayName}** just paired with you via Krill App.
+
+• **User ID:** ${senderId}
+• **Platform:** ${content?.platform || "unknown"}
+• **Time:** ${new Date().toLocaleString()}
+
+Say hello and introduce yourself! 👋`;
+
+        await client.sendMessage(roomId, {
+          msgtype: "m.text",
+          body: welcomeMessage,
+        });
+        
+        logVerboseMessage(`matrix: sent krill welcome to ${roomId}`);
+      } catch (err) {
+        logger.warn({ roomId, error: String(err) }, "Failed to handle krill pairing");
+      }
+      return;
+    }
+    // === END KRILL PAIRING HANDLER ===
+    
     if (eventType === EventType.RoomMessageEncrypted) {
       logVerboseMessage(
         `matrix: encrypted raw event room=${roomId} id=${event?.event_id ?? "unknown"}`,

@@ -252,6 +252,103 @@ export function validatePairingToken(token: string): KrillPairing | null {
 }
 
 /**
+ * Authentication context extracted from a message
+ */
+export interface KrillAuthContext {
+  authenticated: boolean;
+  pairing?: KrillPairing;
+  deviceName?: string;
+  senses?: Record<string, boolean>;
+}
+
+/**
+ * Extract and validate authentication from a Matrix event content
+ * Supports Option B: ai.krill.auth field in event content
+ * 
+ * @param eventContent - The full Matrix event content object
+ * @param senderId - The Matrix user ID of the sender
+ * @returns Authentication context with pairing info if valid
+ */
+export function extractAuthFromEvent(
+  eventContent: Record<string, unknown>,
+  senderId: string,
+): KrillAuthContext {
+  // Check for ai.krill.auth field
+  const auth = eventContent["ai.krill.auth"] as { pairing_token?: string } | undefined;
+  
+  if (!auth?.pairing_token) {
+    // No authentication provided - check if sender has any pairing
+    const existingPairing = Object.values(pairingsStore.pairings).find(
+      p => p.user_mxid === senderId
+    );
+    
+    if (existingPairing) {
+      // User has pairing but didn't authenticate this message
+      // We can still identify them but mark as not explicitly authenticated
+      return {
+        authenticated: false,
+        pairing: existingPairing,
+        deviceName: existingPairing.device_name,
+        senses: existingPairing.senses,
+      };
+    }
+    
+    return { authenticated: false };
+  }
+  
+  // Validate the token
+  const pairing = validatePairingToken(auth.pairing_token);
+  
+  if (!pairing) {
+    console.log(`[krill] Invalid pairing token from ${senderId}`);
+    return { authenticated: false };
+  }
+  
+  // Verify sender matches pairing
+  if (pairing.user_mxid !== senderId) {
+    console.log(`[krill] Token/sender mismatch: expected ${pairing.user_mxid}, got ${senderId}`);
+    return { authenticated: false };
+  }
+  
+  console.log(`[krill] Authenticated message from ${pairing.device_name} (${senderId})`);
+  
+  return {
+    authenticated: true,
+    pairing,
+    deviceName: pairing.device_name,
+    senses: pairing.senses,
+  };
+}
+
+/**
+ * Build context string to prepend to agent messages
+ * This adds Krill context without the agent needing to understand the protocol
+ */
+export function buildAgentContext(authContext: KrillAuthContext): string | null {
+  if (!authContext.pairing) {
+    return null;
+  }
+  
+  const lines: string[] = [];
+  lines.push(`[Krill Context]`);
+  lines.push(`• Device: ${authContext.deviceName}`);
+  lines.push(`• Authenticated: ${authContext.authenticated ? "✓" : "✗"}`);
+  
+  // Add enabled senses
+  if (authContext.senses) {
+    const enabledSenses = Object.entries(authContext.senses)
+      .filter(([_, enabled]) => enabled)
+      .map(([sense]) => sense);
+    
+    if (enabledSenses.length > 0) {
+      lines.push(`• Senses enabled: ${enabledSenses.join(", ")}`);
+    }
+  }
+  
+  return lines.join("\n");
+}
+
+/**
  * Main interceptor function
  * Returns: { handled: true, response: string } if handled, { handled: false } otherwise
  */

@@ -30,7 +30,12 @@ import { resolveMatrixThreadRootId, resolveMatrixThreadTarget } from "./threads.
 import { resolveMatrixLocation, type MatrixLocationPayload } from "./location.js";
 import type { MatrixRawEvent, RoomMessageEventContent } from "./types.js";
 import { EventType, RelationType } from "./types.js";
-import { interceptKrillMessage } from "../../krill/interceptor.js";
+import { 
+  interceptKrillMessage, 
+  extractAuthFromEvent, 
+  buildAgentContext,
+  type KrillAuthContext,
+} from "../../krill/interceptor.js";
 
 export type MatrixMonitorHandlerParams = {
   client: MatrixClient;
@@ -153,6 +158,20 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         }
       }
       // === END KRILL INTERCEPTION ===
+
+      // === KRILL AUTHENTICATION ===
+      // Extract authentication from event content (Option B: ai.krill.auth field)
+      let krillAuthContext: KrillAuthContext = { authenticated: false };
+      try {
+        const eventContent = event.content as Record<string, unknown>;
+        krillAuthContext = extractAuthFromEvent(eventContent, senderId);
+        if (krillAuthContext.authenticated) {
+          logVerboseMessage(`matrix: krill authenticated message from ${krillAuthContext.deviceName}`);
+        }
+      } catch (err) {
+        logVerboseMessage(`matrix: krill auth extraction error: ${err}`);
+      }
+      // === END KRILL AUTHENTICATION ===
 
       const eventTs = event.origin_server_ts;
       const eventAge = event.unsigned?.age;
@@ -473,7 +492,12 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         },
       });
       const envelopeFrom = isDirectMessage ? senderName : (roomName ?? roomId);
-      const textWithId = `${bodyText}\n[matrix event id: ${messageId} room: ${roomId}]`;
+      
+      // Build message with Krill context if authenticated
+      const krillContext = buildAgentContext(krillAuthContext);
+      const textWithId = krillContext
+        ? `${krillContext}\n\n${bodyText}\n[matrix event id: ${messageId} room: ${roomId}]`
+        : `${bodyText}\n[matrix event id: ${messageId} room: ${roomId}]`;
       const storePath = core.channel.session.resolveStorePath(cfg.session?.store, {
         agentId: route.agentId,
       });
