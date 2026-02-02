@@ -1,0 +1,8 @@
+{
+  "name": "krill-update-plugin",
+  "version": "1.0.0",
+  "description": "Auto-update plugin for Krill Network gateways",
+  "main": "src/index.ts",
+  "type": "module",
+  "dependencies": {}
+}

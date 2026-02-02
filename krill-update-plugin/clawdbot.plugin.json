@@ -1,0 +1,28 @@
+{
+  "id": "krill-update",
+  "name": "Krill Update",
+  "version": "1.0.0",
+  "description": "Receives plugin updates from Krill central and auto-updates",
+  "main": "src/index.ts",
+  "config": {
+    "type": "object",
+    "properties": {
+      "apiUrl": {
+        "type": "string",
+        "default": "https://api.krillbot.app"
+      },
+      "updatesRoom": {
+        "type": "string",
+        "default": "#krill-updates:matrix.krillbot.app"
+      },
+      "autoUpdate": {
+        "type": "boolean",
+        "default": true
+      },
+      "checkIntervalMinutes": {
+        "type": "number",
+        "default": 60
+      }
+    }
+  }
+}
