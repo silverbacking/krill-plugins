@@ -1,8 +1,8 @@
 {
   "id": "krill-matrix",
   "name": "Matrix (Krill)",
-  "version": "0.1.0",
-  "description": "Krill-enabled Matrix channel plugin with protocol interception",
+  "version": "0.2.0",
+  "description": "Krill-enabled Matrix channel plugin with protocol interception and auto-provisioning",
   "author": "Silverbacking",
   "configSchema": {
     "type": "object",
@@ -15,15 +15,36 @@
         "type": "string", 
         "description": "Secret key for Krill operations"
       },
+      "adminToken": {
+        "type": "string",
+        "description": "Synapse Admin API token for auto-provisioning agents"
+      },
+      "autoProvision": {
+        "type": "boolean",
+        "description": "Automatically create and provision agents on startup",
+        "default": false
+      },
       "agents": {
         "type": "array",
+        "description": "List of agents managed by this gateway",
         "items": {
           "type": "object",
           "properties": {
-            "mxid": { "type": "string" },
-            "displayName": { "type": "string" },
-            "capabilities": { "type": "array", "items": { "type": "string" } }
-          }
+            "mxid": { 
+              "type": "string",
+              "description": "Matrix user ID (@user:server)"
+            },
+            "displayName": { 
+              "type": "string",
+              "description": "Display name for the agent"
+            },
+            "capabilities": { 
+              "type": "array", 
+              "items": { "type": "string" },
+              "description": "Agent capabilities (chat, senses, calendar, location, etc.)"
+            }
+          },
+          "required": ["mxid"]
         }
       }
     },
@@ -31,6 +52,8 @@
   },
   "uiHints": {
     "gatewaySecret": { "label": "Gateway Secret", "sensitive": true },
-    "gatewayId": { "label": "Gateway ID", "placeholder": "my-gateway-001" }
+    "gatewayId": { "label": "Gateway ID", "placeholder": "my-gateway-001" },
+    "adminToken": { "label": "Synapse Admin Token", "sensitive": true, "placeholder": "syt_admin_xxx" },
+    "autoProvision": { "label": "Auto-provision Agents" }
   }
 }
