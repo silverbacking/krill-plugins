@@ -296,6 +296,101 @@ function generateVerifyResponseText(challenge: string, agentConfig: KrillConfig)
   return JSON.stringify(response);
 }
 
+// Krill API endpoint for enrollment
+const KRILL_API_URL = "https://api.krillbot.app";
+const DEFAULT_REGISTRY_ROOM = "#krill-agents:matrix.krillbot.app";
+
+/**
+ * Auto-enroll agent via Krill API + Matrix
+ * 1. Call API to prepare enrollment data
+ * 2. Use agent's Matrix token to submit state event
+ */
+async function autoEnrollAgent(api: ClawdbotPluginApi, config: KrillConfig): Promise<void> {
+  const agent = config.agents?.[0];
+  if (!agent) {
+    api.logger.warn("[krill-enrollment] No agent configured for auto-enrollment");
+    return;
+  }
+
+  api.logger.info(`[krill-enrollment] Starting auto-enrollment for ${agent.mxid}...`);
+
+  try {
+    // Step 1: Get Matrix client
+    const matrixClient = (api as any).matrixClient;
+    if (!matrixClient) {
+      api.logger.warn("[krill-enrollment] Matrix client not available");
+      return;
+    }
+
+    // Step 2: Resolve and join registry room
+    const registryRoomAlias = config.agentsRoomId || DEFAULT_REGISTRY_ROOM;
+    let roomId: string;
+    
+    try {
+      const resolveResult = await matrixClient.getRoomIdByAlias(registryRoomAlias);
+      roomId = resolveResult.roomId;
+      api.logger.info(`[krill-enrollment] Registry room: ${roomId}`);
+    } catch (e) {
+      api.logger.warn(`[krill-enrollment] Could not resolve ${registryRoomAlias}: ${e}`);
+      return;
+    }
+
+    try {
+      await matrixClient.joinRoom(roomId);
+    } catch (e) {
+      // Already joined or error
+    }
+
+    // Step 3: Check if already enrolled
+    try {
+      const existing = await matrixClient.getRoomStateEvent(roomId, "ai.krill.agent", agent.mxid);
+      if (existing && existing.gateway_id === config.gatewayId) {
+        api.logger.info(`[krill-enrollment] Already enrolled: ${agent.mxid}`);
+        return;
+      }
+    } catch (e) {
+      // Not enrolled yet
+    }
+
+    // Step 4: Call API to prepare enrollment data
+    api.logger.info(`[krill-enrollment] Preparing enrollment via API...`);
+    const apiResponse = await fetch(`${KRILL_API_URL}/v1/agents/prepare-enrollment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mxid: agent.mxid,
+        gateway_id: config.gatewayId,
+        gateway_secret: config.gatewaySecret,
+        display_name: agent.displayName,
+        description: agent.description,
+        capabilities: agent.capabilities,
+      }),
+    });
+
+    if (!apiResponse.ok) {
+      const error = await apiResponse.text();
+      api.logger.warn(`[krill-enrollment] API error: ${error}`);
+      return;
+    }
+
+    const { enrollment } = await apiResponse.json();
+    
+    // Step 5: Submit state event to Matrix
+    api.logger.info(`[krill-enrollment] Submitting to Matrix...`);
+    await matrixClient.sendStateEvent(
+      roomId,
+      enrollment.event_type,
+      enrollment.state_key,
+      enrollment.content
+    );
+
+    api.logger.info(`[krill-enrollment] ✅ Agent enrolled: ${agent.mxid}`);
+
+  } catch (error) {
+    api.logger.warn(`[krill-enrollment] Auto-enrollment failed: ${error}`);
+  }
+}
+
 const plugin = {
   id: "krill-enrollment",
   name: "Krill Enrollment",
@@ -305,6 +400,7 @@ const plugin = {
     gatewaySecret: { label: "Gateway Secret", sensitive: true },
     gatewayId: { label: "Gateway ID", placeholder: "clawdbot-001" },
     gatewayUrl: { label: "Gateway URL", placeholder: "https://gateway.example.com" },
+    agentsRoomId: { label: "Registry Room", placeholder: "#krill-agents:matrix.krillbot.app" },
   },
 
   register(api: ClawdbotPluginApi) {
@@ -317,6 +413,14 @@ const plugin = {
       pluginConfig = config;
       api.logger.info(`Krill enrollment plugin loaded for gateway: ${config.gatewayId}`);
       api.logger.info(`Krill agents configured: ${config.agents?.length || 0}`);
+      
+      // Schedule auto-enrollment after Matrix is ready (with delay to ensure connection)
+      setTimeout(() => {
+        autoEnrollAgent(api, config).catch((e) => {
+          api.logger.warn(`[krill-enrollment] Auto-enrollment error: ${e}`);
+        });
+      }, 10000); // Wait 10s for Matrix to connect
+      
     } else {
       api.logger.warn("Krill enrollment plugin: no config found");
     }
