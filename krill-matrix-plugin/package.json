@@ -22,7 +22,7 @@
   "dependencies": {
     "@matrix-org/matrix-sdk-crypto-nodejs": "^0.4.0",
     "markdown-it": "14.1.0",
-    "matrix-bot-sdk": "0.8.0",
+    "matrix-bot-sdk": "github:silverbacking/matrix-bot-sdk#fixes",
     "music-metadata": "^11.10.6",
     "zod": "^4.3.6"
   },
