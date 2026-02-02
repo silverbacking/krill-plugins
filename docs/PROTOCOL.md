@@ -402,32 +402,89 @@ Say hello and introduce yourself! 👋
 
 ---
 
-## 5. Missatges Autenticats
+## 5. Missatges Autenticats (Opció B)
 
-Qualsevol missatge de l'app (text normal o protocol) pot incloure autenticació:
+L'autenticació de missatges utilitza **Opció B**: camp `ai.krill.auth` dins del event content de Matrix.
+Això manté compatibilitat total amb altres clients Matrix (veuen el missatge normal).
+
+### 5.1 Format del missatge autenticat
 
 ```json
+// Event Matrix m.room.message
 {
+  "msgtype": "m.text",
+  "body": "Hola Jarvis, quin temps fa?",
   "ai.krill.auth": {
     "pairing_token": "krill_tk_v1_..."
-  },
-  "message": "Hola Jarvis, quin temps fa?"
-}
-```
-
-O per missatges de text pur, l'app pot afegir un header invisible que l'interceptor processa:
-
-```json
-{
-  "type": "ai.krill.message",
-  "content": {
-    "pairing_token": "krill_tk_v1_...",
-    "text": "Hola Jarvis, quin temps fa?"
   }
 }
 ```
 
-L'interceptor valida el token i passa el text a l'agent amb context addicional.
+| Camp | Descripció |
+|------|------------|
+| `msgtype` | Tipus de missatge Matrix estàndard |
+| `body` | Text del missatge (visible per tots els clients) |
+| `ai.krill.auth` | Camp extra amb autenticació (ignorat per clients normals) |
+| `pairing_token` | Token obtingut durant pairing |
+
+### 5.2 Flux d'autenticació
+
+```
+┌─────────────┐                    ┌─────────────┐                    ┌─────────────┐
+│  Krill App  │                    │ Interceptor │                    │    Agent    │
+└──────┬──────┘                    └──────┬──────┘                    └──────┬──────┘
+       │                                  │                                  │
+       │ m.text + ai.krill.auth           │                                  │
+       │ ─────────────────────────────────>                                  │
+       │                                  │                                  │
+       │                                  │ extractAuthFromEvent()           │
+       │                                  │ ──────────┐                      │
+       │                                  │           │ validate token       │
+       │                                  │ <─────────┘                      │
+       │                                  │                                  │
+       │                                  │ buildAgentContext()              │
+       │                                  │ ──────────┐                      │
+       │                                  │           │ build context        │
+       │                                  │ <─────────┘                      │
+       │                                  │                                  │
+       │                                  │ [Krill Context]                  │
+       │                                  │ • Device: iPhone de Carles       │
+       │                                  │ • Authenticated: ✓               │
+       │                                  │ • Senses: location, camera       │
+       │                                  │                                  │
+       │                                  │ + missatge original              │
+       │                                  │ ────────────────────────────────>│
+       │                                  │                                  │
+```
+
+### 5.3 Context injectat a l'agent
+
+Quan un missatge està autenticat, l'agent rep:
+
+```
+[Krill Context]
+• Device: iPhone de Carles
+• Authenticated: ✓
+• Senses enabled: location, camera
+
+Hola Jarvis, quin temps fa?
+[matrix event id: $abc123 room: !xyz789]
+```
+
+### 5.4 Casos d'ús
+
+| Escenari | Autenticat | Context a l'agent |
+|----------|------------|-------------------|
+| Missatge des de Krill App amb pairing | ✓ Sí | Context complet + senses |
+| Missatge des de Krill App sense pairing | ✗ No | Només missatge |
+| Missatge des d'Element/altre client | ✗ No | Només missatge |
+| Missatge de protocol (JSON) | N/A | Interceptat |
+
+### 5.5 Seguretat
+
+- **Token mai exposat**: L'agent no veu el token, només el context
+- **Validació estricta**: Sender Matrix ha de coincidir amb el pairing
+- **Transparència**: Altres clients Matrix funcionen normalment
 
 ---
 
