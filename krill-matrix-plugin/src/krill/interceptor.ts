@@ -104,35 +104,80 @@ function parseKrillMessage(text: string): { type: string; content: any } | null 
 }
 
 /**
+ * Format a friendly message for display alongside the protocol response
+ */
+function formatFriendlyMessage(type: string, data: any): string {
+  switch (type) {
+    case "ai.krill.verify.response":
+      if (data.verified && data.agent) {
+        return `✅ **${data.agent.display_name}** verificat i online!\n` +
+               `🔧 Capacitats: ${(data.agent.capabilities || []).join(", ")}`;
+      }
+      return "❌ No s'ha pogut verificar l'agent.";
+      
+    case "ai.krill.pair.response":
+      if (data.success && data.agent) {
+        return `🔗 **Connectat amb ${data.agent.display_name}!**\n` +
+               `${data.message || "Ara podem parlar!"}`;
+      }
+      return "❌ No s'ha pogut completar el pairing.";
+      
+    case "ai.krill.pair.revoked":
+      return data.success 
+        ? "👋 Pairing revocat. Fins aviat!" 
+        : "❌ No s'ha trobat el pairing.";
+        
+    case "ai.krill.senses.updated":
+      if (data.success) {
+        const enabled = Object.entries(data.senses || {})
+          .filter(([_, v]) => v)
+          .map(([k]) => k);
+        return `📡 Senses actualitzats: ${enabled.join(", ") || "cap"}`;
+      }
+      return "❌ No s'han pogut actualitzar els senses.";
+      
+    default:
+      return "";
+  }
+}
+
+/**
  * Handle verify request
  */
-function handleVerifyRequest(content: any, agentMxid: string): string {
-  if (!config) return JSON.stringify({ type: "ai.krill.verify.response", content: { verified: false, error: "NOT_CONFIGURED" } });
+function handleVerifyRequest(content: any, agentMxid: string): { json: string; friendly: string } {
+  if (!config) {
+    const resp = { type: "ai.krill.verify.response", content: { verified: false, error: "NOT_CONFIGURED" } };
+    return { json: JSON.stringify(resp), friendly: "❌ Agent no configurat." };
+  }
   
   const agent = config.agents.find(a => a.mxid === agentMxid);
-  const response = {
-    type: "ai.krill.verify.response",
-    content: {
-      challenge: content.challenge,
-      verified: true,
-      agent: agent ? {
-        mxid: agent.mxid,
-        display_name: agent.displayName,
-        gateway_id: config.gatewayId,
-        capabilities: agent.capabilities || ["chat"],
-        status: "online",
-      } : null,
-      responded_at: Math.floor(Date.now() / 1000),
-    },
+  const responseContent = {
+    challenge: content.challenge,
+    verified: true,
+    agent: agent ? {
+      mxid: agent.mxid,
+      display_name: agent.displayName,
+      gateway_id: config.gatewayId,
+      capabilities: agent.capabilities || ["chat"],
+      status: "online",
+    } : null,
+    responded_at: Math.floor(Date.now() / 1000),
   };
-  return JSON.stringify(response);
+  const response = { type: "ai.krill.verify.response", content: responseContent };
+  return { 
+    json: JSON.stringify(response), 
+    friendly: formatFriendlyMessage("ai.krill.verify.response", responseContent) 
+  };
 }
 
 /**
  * Handle pair request
  */
-function handlePairRequest(content: any, agentMxid: string, userMxid: string): string {
-  if (!config) return JSON.stringify({ type: "ai.krill.pair.response", content: { success: false, error: "NOT_CONFIGURED" } });
+function handlePairRequest(content: any, agentMxid: string, userMxid: string): { json: string; friendly: string } {
+  if (!config) {
+    const resp = { type: "ai.krill.pair.response", content: { success: false, error: "NOT_CONFIGURED" } };
+    return { json: JSON.stringify(resp), friendly: "❌ Agent no configurat." };
+  }
   
   const { device_id, device_name, device_type } = content;
   
@@ -164,28 +209,29 @@ function handlePairRequest(content: any, agentMxid: string, userMxid: string): s
   savePairings();
   
   const agent = config.agents.find(a => a.mxid === agentMxid);
-  const response = {
-    type: "ai.krill.pair.response",
-    content: {
-      success: true,
-      pairing_id,
-      pairing_token,
-      agent: agent ? {
-        mxid: agent.mxid,
-        display_name: agent.displayName,
-        capabilities: agent.capabilities || ["chat"],
-      } : null,
-      created_at: now,
-      message: "Hola! Ara estem connectats. Què puc fer per tu?",
-    },
+  const responseContent = {
+    success: true,
+    pairing_id,
+    pairing_token,
+    agent: agent ? {
+      mxid: agent.mxid,
+      display_name: agent.displayName,
+      capabilities: agent.capabilities || ["chat"],
+    } : null,
+    created_at: now,
+    message: "Hola! Ara estem connectats. Què puc fer per tu?",
   };
-  return JSON.stringify(response);
+  const response = { type: "ai.krill.pair.response", content: responseContent };
+  return { 
+    json: JSON.stringify(response), 
+    friendly: formatFriendlyMessage("ai.krill.pair.response", responseContent) 
+  };
 }
 
 /**
  * Handle pair revoke
  */
-function handlePairRevoke(content: any): string {
+function handlePairRevoke(content: any): { json: string; friendly: string } {
   const { pairing_token } = content;
   const tokenHash = hashToken(pairing_token);
   
@@ -196,22 +242,26 @@ function handlePairRevoke(content: any): string {
   if (pairingKey) {
     delete pairingsStore.pairings[pairingKey];
     savePairings();
-    return JSON.stringify({
-      type: "ai.krill.pair.revoked",
-      content: { success: true, message: "Pairing revocat. Fins aviat!" },
-    });
+    const responseContent = { success: true, message: "Pairing revocat. Fins aviat!" };
+    const response = { type: "ai.krill.pair.revoked", content: responseContent };
+    return { 
+      json: JSON.stringify(response), 
+      friendly: formatFriendlyMessage("ai.krill.pair.revoked", responseContent) 
+    };
   }
   
-  return JSON.stringify({
-    type: "ai.krill.pair.revoked",
-    content: { success: false, error: "PAIRING_NOT_FOUND" },
-  });
+  const responseContent = { success: false, error: "PAIRING_NOT_FOUND" };
+  const response = { type: "ai.krill.pair.revoked", content: responseContent };
+  return { 
+    json: JSON.stringify(response), 
+    friendly: formatFriendlyMessage("ai.krill.pair.revoked", responseContent) 
+  };
 }
 
 /**
  * Handle senses update
  */
-function handleSensesUpdate(content: any): string {
+function handleSensesUpdate(content: any): { json: string; friendly: string } {
   const { pairing_token, senses } = content;
   const tokenHash = hashToken(pairing_token);
   
@@ -223,16 +273,20 @@ function handleSensesUpdate(content: any): string {
     pairing.senses = { ...pairing.senses, ...senses };
     pairing.last_seen_at = Math.floor(Date.now() / 1000);
     savePairings();
-    return JSON.stringify({
-      type: "ai.krill.senses.updated",
-      content: { success: true, senses: pairing.senses },
-    });
+    const responseContent = { success: true, senses: pairing.senses };
+    const response = { type: "ai.krill.senses.updated", content: responseContent };
+    return { 
+      json: JSON.stringify(response), 
+      friendly: formatFriendlyMessage("ai.krill.senses.updated", responseContent) 
+    };
   }
   
-  return JSON.stringify({
-    type: "ai.krill.senses.updated",
-    content: { success: false, error: "INVALID_TOKEN" },
-  });
+  const responseContent = { success: false, error: "INVALID_TOKEN" };
+  const response = { type: "ai.krill.senses.updated", content: responseContent };
+  return { 
+    json: JSON.stringify(response), 
+    friendly: formatFriendlyMessage("ai.krill.senses.updated", responseContent) 
+  };
 }
 
 /**
@@ -351,6 +405,10 @@ export function buildAgentContext(authContext: KrillAuthContext): string | null 
 /**
  * Main interceptor function
  * Returns: { handled: true, response: string } if handled, { handled: false } otherwise
+ * 
+ * Sends two messages:
+ * 1. Protocol JSON (for the Krill app to parse)
+ * 2. Friendly message (for human-readable display)
  */
 export async function interceptKrillMessage(
   client: MatrixClient,
@@ -367,23 +425,23 @@ export async function interceptKrillMessage(
   
   console.log(`[krill] Intercepted ${krillMsg.type} from ${senderId}`);
   
-  let response: string;
+  let result: { json: string; friendly: string };
   
   switch (krillMsg.type) {
     case "ai.krill.verify.request":
-      response = handleVerifyRequest(krillMsg.content, selfUserId);
+      result = handleVerifyRequest(krillMsg.content, selfUserId);
       break;
       
     case "ai.krill.pair.request":
-      response = handlePairRequest(krillMsg.content, selfUserId, senderId);
+      result = handlePairRequest(krillMsg.content, selfUserId, senderId);
       break;
       
     case "ai.krill.pair.revoke":
-      response = handlePairRevoke(krillMsg.content);
+      result = handlePairRevoke(krillMsg.content);
       break;
       
     case "ai.krill.senses.update":
-      response = handleSensesUpdate(krillMsg.content);
+      result = handleSensesUpdate(krillMsg.content);
       break;
       
     default:
@@ -391,11 +449,21 @@ export async function interceptKrillMessage(
       return { handled: false };
   }
   
-  // Send response
+  // Send protocol response (JSON) - for the Krill app
   await client.sendMessage(roomId, {
     msgtype: "m.text",
-    body: response,
+    body: result.json,
   });
   
-  return { handled: true, response };
+  // Send friendly response - for human-readable display
+  if (result.friendly) {
+    await client.sendMessage(roomId, {
+      msgtype: "m.text",
+      body: result.friendly,
+      format: "org.matrix.custom.html",
+      formatted_body: result.friendly.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>"),
+    });
+  }
+  
+  return { handled: true, response: result.json };
 }
