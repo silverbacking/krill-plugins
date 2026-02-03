@@ -1,0 +1,44 @@
+{
+  "id": "krill-agent-init",
+  "name": "Krill Agent Init",
+  "version": "1.0.0",
+  "description": "Auto-enrollment of agent to Krill Network on startup",
+  "author": "Krill Network",
+  "main": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "gatewayId": {
+        "type": "string",
+        "description": "Unique identifier for this gateway"
+      },
+      "gatewaySecret": {
+        "type": "string",
+        "description": "Secret key for verification hashes"
+      },
+      "registryRoomId": {
+        "type": "string",
+        "description": "Matrix room ID for agent registry"
+      },
+      "krillApiUrl": {
+        "type": "string",
+        "description": "Krill API URL"
+      },
+      "agent": {
+        "type": "object",
+        "properties": {
+          "mxid": { "type": "string" },
+          "displayName": { "type": "string" },
+          "description": { "type": "string" },
+          "capabilities": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["mxid", "displayName"]
+      }
+    },
+    "required": ["gatewayId", "gatewaySecret", "agent"]
+  },
+  "uiHints": {
+    "gatewaySecret": { "sensitive": true }
+  },
+  "keywords": ["krill", "enrollment", "init", "matrix"]
+}

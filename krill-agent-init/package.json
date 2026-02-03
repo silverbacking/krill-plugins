@@ -1,0 +1,20 @@
+{
+  "name": "krill-agent-init",
+  "version": "1.0.0",
+  "description": "Krill Agent Initialization - Auto-enrollment to Matrix and Krill Registry",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["clawdbot", "plugin", "krill", "enrollment", "matrix"],
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "clawdbot": "*"
+  },
+  "peerDependencies": {
+    "clawdbot": ">=0.9.0"
+  }
+}
