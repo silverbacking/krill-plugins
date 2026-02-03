@@ -1,8 +1,11 @@
 {
   "name": "krill-update-plugin",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Auto-update plugin for Krill Network gateways with real-time Matrix notifications",
   "main": "src/index.ts",
   "type": "module",
+  "clawdbot": {
+    "pluginId": "krill-update"
+  },
   "dependencies": {}
 }

@@ -41,6 +41,7 @@ interface PairingsStore {
 let config: KrillConfig | null = null;
 let pairingsStore: PairingsStore = { pairings: {} };
 let pairingsPath = "";
+let startTime = Date.now(); // Track uptime
 
 /**
  * Initialize the Krill interceptor
@@ -259,6 +260,45 @@ function handlePairRevoke(content: any): { json: string; friendly: string } {
 }
 
 /**
+ * Handle health ping - responds with agent status (no LLM involved)
+ */
+function handleHealthPing(content: any, agentMxid: string): { json: string; friendly: string } {
+  if (!config) {
+    const resp = { 
+      type: "ai.krill.health.pong", 
+      content: { 
+        timestamp: content.timestamp,
+        request_id: content.request_id,
+        status: "offline",
+        error: "NOT_CONFIGURED" 
+      } 
+    };
+    return { json: JSON.stringify(resp), friendly: "" };
+  }
+  
+  const agent = config.agents.find(a => a.mxid === agentMxid);
+  const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
+  
+  const responseContent = {
+    timestamp: content.timestamp,
+    request_id: content.request_id,
+    agent_id: agentMxid,
+    gateway_id: config.gatewayId,
+    status: "online",
+    load: "low", // TODO: Could be dynamic based on actual load
+    uptime_seconds: uptimeSeconds,
+    version: "0.2.0",
+    capabilities: agent?.capabilities || ["chat"],
+    responded_at: Date.now(),
+  };
+  
+  const response = { type: "ai.krill.health.pong", content: responseContent };
+  
+  // No friendly message for healthchecks - they're automated
+  return { json: JSON.stringify(response), friendly: "" };
+}
+
+/**
  * Handle senses update
  */
 function handleSensesUpdate(content: any): { json: string; friendly: string } {
@@ -442,6 +482,10 @@ export async function interceptKrillMessage(
       
     case "ai.krill.senses.update":
       result = handleSensesUpdate(krillMsg.content);
+      break;
+    
+    case "ai.krill.health.ping":
+      result = handleHealthPing(krillMsg.content, selfUserId);
       break;
       
     default:

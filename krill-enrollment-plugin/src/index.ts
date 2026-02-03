@@ -299,11 +299,54 @@ function generateVerifyResponseText(challenge: string, agentConfig: KrillConfig)
 // Krill API endpoint for enrollment
 const KRILL_API_URL = "https://api.krillbot.app";
 const DEFAULT_REGISTRY_ROOM = "#krill-agents:matrix.krillbot.app";
+const DEFAULT_REGISTRY_ROOM_ID = "!XMY8mTsfa81Wr59NIfVb3IfDD0NkJFVbdzi8nFf1ElE";
 
 /**
- * Auto-enroll agent via Krill API + Matrix
- * 1. Call API to prepare enrollment data
- * 2. Use agent's Matrix token to submit state event
+ * Get Matrix access token from config
+ */
+function getMatrixCredentials(api: ClawdbotPluginApi): { homeserver: string; userId: string; password: string } | null {
+  const matrixConfig = (api.config as any)?.channels?.matrix;
+  if (!matrixConfig?.homeserver || !matrixConfig?.userId) {
+    return null;
+  }
+  return {
+    homeserver: matrixConfig.homeserver,
+    userId: matrixConfig.userId,
+    password: matrixConfig.password,
+  };
+}
+
+/**
+ * Login to Matrix and get access token
+ */
+async function matrixLogin(homeserver: string, userId: string, password: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${homeserver}/_matrix/client/v3/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "m.login.password",
+        user: userId,
+        password: password,
+      }),
+    });
+    
+    if (!response.ok) {
+      return null;
+    }
+    
+    const data = await response.json();
+    return data.access_token;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Auto-enroll agent via Krill API + Matrix REST
+ * 1. Login to Matrix
+ * 2. Join registry room
+ * 3. Submit state event
  */
 async function autoEnrollAgent(api: ClawdbotPluginApi, config: KrillConfig): Promise<void> {
   const agent = config.agents?.[0];
@@ -315,76 +358,93 @@ async function autoEnrollAgent(api: ClawdbotPluginApi, config: KrillConfig): Pro
   api.logger.info(`[krill-enrollment] Starting auto-enrollment for ${agent.mxid}...`);
 
   try {
-    // Step 1: Get Matrix client
-    const matrixClient = (api as any).matrixClient;
-    if (!matrixClient) {
-      api.logger.warn("[krill-enrollment] Matrix client not available");
+    // Step 1: Get Matrix credentials from config
+    const creds = getMatrixCredentials(api);
+    if (!creds) {
+      api.logger.warn("[krill-enrollment] Matrix credentials not found in config");
       return;
     }
 
-    // Step 2: Resolve and join registry room
-    const registryRoomAlias = config.agentsRoomId || DEFAULT_REGISTRY_ROOM;
-    let roomId: string;
+    // Step 2: Login to Matrix
+    api.logger.info(`[krill-enrollment] Logging in to Matrix...`);
+    const token = await matrixLogin(creds.homeserver, creds.userId, creds.password);
+    if (!token) {
+      api.logger.warn("[krill-enrollment] Matrix login failed");
+      return;
+    }
+
+    const homeserver = creds.homeserver;
+    const roomId = config.agentsRoomId || DEFAULT_REGISTRY_ROOM_ID;
     
+    // Step 3: Join registry room
+    api.logger.info(`[krill-enrollment] Joining registry room...`);
     try {
-      const resolveResult = await matrixClient.getRoomIdByAlias(registryRoomAlias);
-      roomId = resolveResult.roomId;
-      api.logger.info(`[krill-enrollment] Registry room: ${roomId}`);
+      await fetch(`${homeserver}/_matrix/client/v3/join/${encodeURIComponent(roomId)}`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
     } catch (e) {
-      api.logger.warn(`[krill-enrollment] Could not resolve ${registryRoomAlias}: ${e}`);
-      return;
+      // Ignore - might already be joined
     }
 
+    // Step 4: Check if already enrolled with correct data
+    api.logger.info(`[krill-enrollment] Checking existing enrollment...`);
     try {
-      await matrixClient.joinRoom(roomId);
-    } catch (e) {
-      // Already joined or error
-    }
-
-    // Step 3: Check if already enrolled
-    try {
-      const existing = await matrixClient.getRoomStateEvent(roomId, "ai.krill.agent", agent.mxid);
-      if (existing && existing.gateway_id === config.gatewayId) {
-        api.logger.info(`[krill-enrollment] Already enrolled: ${agent.mxid}`);
-        return;
+      const stateResponse = await fetch(
+        `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/ai.krill.agent/${encodeURIComponent(agent.mxid)}`,
+        { headers: { "Authorization": `Bearer ${token}` } }
+      );
+      
+      if (stateResponse.ok) {
+        const existing = await stateResponse.json();
+        // Check if enrolled with correct gateway_id and a valid verification_hash
+        if (existing.gateway_id === config.gatewayId && existing.verification_hash) {
+          api.logger.info(`[krill-enrollment] ✅ Already enrolled: ${agent.mxid}`);
+          return;
+        }
       }
     } catch (e) {
-      // Not enrolled yet
+      // Not enrolled yet - continue
     }
 
-    // Step 4: Call API to prepare enrollment data
-    api.logger.info(`[krill-enrollment] Preparing enrollment via API...`);
-    const apiResponse = await fetch(`${KRILL_API_URL}/v1/agents/prepare-enrollment`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mxid: agent.mxid,
-        gateway_id: config.gatewayId,
-        gateway_secret: config.gatewaySecret,
-        display_name: agent.displayName,
-        description: agent.description,
-        capabilities: agent.capabilities,
-      }),
-    });
+    // Step 5: Generate enrollment data (use gatewaySecret directly as verification_hash for compatibility)
+    const enrolled_at = Math.floor(Date.now() / 1000);
+    const enrollmentContent = {
+      gateway_id: config.gatewayId,
+      gateway_url: config.gatewayUrl || homeserver,
+      display_name: agent.displayName,
+      description: agent.description || `${agent.displayName} - Krill Network Agent`,
+      capabilities: agent.capabilities || ["chat", "senses", "location"],
+      enrolled_at,
+      verification_hash: config.gatewaySecret, // Use secret directly for HMAC compatibility
+    };
 
-    if (!apiResponse.ok) {
-      const error = await apiResponse.text();
-      api.logger.warn(`[krill-enrollment] API error: ${error}`);
+    // Step 6: Submit state event to Matrix
+    api.logger.info(`[krill-enrollment] Submitting enrollment to Matrix...`);
+    const stateResponse = await fetch(
+      `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/ai.krill.agent/${encodeURIComponent(agent.mxid)}`,
+      {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(enrollmentContent),
+      }
+    );
+
+    if (!stateResponse.ok) {
+      const error = await stateResponse.text();
+      api.logger.warn(`[krill-enrollment] Matrix state event failed: ${error}`);
       return;
     }
 
-    const { enrollment } = await apiResponse.json();
-    
-    // Step 5: Submit state event to Matrix
-    api.logger.info(`[krill-enrollment] Submitting to Matrix...`);
-    await matrixClient.sendStateEvent(
-      roomId,
-      enrollment.event_type,
-      enrollment.state_key,
-      enrollment.content
-    );
-
-    api.logger.info(`[krill-enrollment] ✅ Agent enrolled: ${agent.mxid}`);
+    const result = await stateResponse.json();
+    api.logger.info(`[krill-enrollment] ✅ Agent enrolled: ${agent.mxid} (event: ${result.event_id})`);
 
   } catch (error) {
     api.logger.warn(`[krill-enrollment] Auto-enrollment failed: ${error}`);
