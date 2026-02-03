@@ -5,6 +5,14 @@ import crypto from "crypto";
 // Import verify handler
 import { processVerifyRequest, isVerifyRequest, createVerifyResponseEvent } from "./verify-handler.js";
 
+// Import health handler
+import { 
+  parseHealthPing, 
+  handleHealthPing, 
+  isHealthPing,
+  markLlmActivity 
+} from "./health-handler.js";
+
 // Plugin config schema
 const configSchema = {
   type: "object",
