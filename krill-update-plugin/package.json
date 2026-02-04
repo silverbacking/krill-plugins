@@ -11,11 +11,17 @@
   "clawdbot": {
     "pluginId": "krill-update"
   },
-  "keywords": ["clawdbot", "plugin", "krill", "update", "ota"],
-  "dependencies": {},
+  "keywords": [
+    "clawdbot",
+    "plugin",
+    "krill",
+    "update",
+    "ota"
+  ],
   "devDependencies": {
-    "typescript": "^5.3.0",
-    "clawdbot": "*"
+    "@types/node": "^25.2.0",
+    "clawdbot": "*",
+    "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "clawdbot": ">=0.9.0"

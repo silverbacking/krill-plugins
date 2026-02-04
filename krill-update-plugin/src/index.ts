@@ -7,7 +7,16 @@
  * Depends on: krill-agent-init (for gatewayId/gatewaySecret)
  */
 
-import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
+// Type definition for Clawdbot Plugin API
+interface ClawdbotPluginApi {
+  config?: any;
+  logger: {
+    info: (msg: string) => void;
+    warn: (msg: string) => void;
+    error?: (msg: string) => void;
+  };
+  registerCli?: (fn: (ctx: { program: any }) => void, opts?: { commands: string[] }) => void;
+}
 import { execSync } from "child_process";
 import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync } from "fs";
 import { createHash, createHmac } from "crypto";
