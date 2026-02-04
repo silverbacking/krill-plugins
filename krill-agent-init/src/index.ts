@@ -161,13 +161,57 @@ async function enrollViaMatrix(
 }
 
 /**
+ * Register gateway via Krill API
+ */
+async function registerGateway(
+  api: ClawdbotPluginApi,
+  config: AgentInitConfig
+): Promise<boolean> {
+  const { gatewayId, gatewaySecret, krillApiUrl } = config;
+  
+  if (!krillApiUrl) {
+    return false;
+  }
+  
+  try {
+    // Generate a public key from the secret (deterministic)
+    const publicKey = crypto.createHash("sha256").update(gatewaySecret).digest("hex");
+    
+    const res = await fetch(`${krillApiUrl}/v1/gateways/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        gateway_id: gatewayId,
+        owner_id: null, // No owner for self-registered gateways
+        public_key: publicKey,
+        capabilities: ["agent-hosting", "chat"],
+      }),
+    });
+    
+    if (res.ok) {
+      api.logger.info(`[krill-init] ✅ Gateway registered: ${gatewayId}`);
+      return true;
+    } else {
+      const error = await res.text();
+      api.logger.warn(`[krill-init] Gateway registration response: ${error}`);
+      // May already exist, which is fine
+      return true;
+    }
+  } catch (error) {
+    api.logger.warn(`[krill-init] Gateway registration failed: ${error}`);
+  }
+  
+  return false;
+}
+
+/**
  * Enroll agent via Krill API
  */
 async function enrollViaApi(
   api: ClawdbotPluginApi,
   config: AgentInitConfig
 ): Promise<boolean> {
-  const { agent, gatewayId, krillApiUrl } = config;
+  const { agent, gatewayId, gatewaySecret, krillApiUrl } = config;
   
   if (!krillApiUrl) {
     return false;
@@ -180,6 +224,7 @@ async function enrollViaApi(
       body: JSON.stringify({
         mxid: agent.mxid,
         gateway_id: gatewayId,
+        gateway_secret: gatewaySecret,
         display_name: agent.displayName,
         description: agent.description,
         capabilities: agent.capabilities || ["chat"],
@@ -187,7 +232,7 @@ async function enrollViaApi(
     });
     
     if (res.ok) {
-      api.logger.info(`[krill-init] ✅ Registered with Krill API`);
+      api.logger.info(`[krill-init] ✅ Agent registered with Krill API`);
       return true;
     }
   } catch (error) {
@@ -218,10 +263,17 @@ const plugin = {
     
     // Schedule enrollment after Matrix connects
     setTimeout(async () => {
+      // 1. Register gateway first
+      if (config.krillApiUrl) {
+        await registerGateway(api, config);
+      }
+      
+      // 2. Enroll agent via Matrix
       if (matrixConfig?.homeserver && matrixConfig?.accessToken) {
         await enrollViaMatrix(api, config, matrixConfig.homeserver, matrixConfig.accessToken);
       }
       
+      // 3. Enroll agent via API
       if (config.krillApiUrl) {
         await enrollViaApi(api, config);
       }
