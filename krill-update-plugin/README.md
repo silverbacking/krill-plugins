@@ -189,6 +189,137 @@ Permet modificar la configuració del gateway remotament via Matrix amb rollback
 6. IF healthy → Report success
 ```
 
+### Exemples d'ús comuns
+
+#### Canviar el model LLM
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "model": "anthropic/claude-sonnet-4"
+    },
+    "restart": true
+  }
+}
+```
+
+#### Canviar l'API key d'un proveïdor
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "providers": {
+        "anthropic": {
+          "apiKey": "sk-ant-api03-xxxxx"
+        }
+      }
+    },
+    "restart": true
+  }
+}
+```
+
+#### Canviar a OpenAI amb nova key
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "model": "openai/gpt-4o",
+      "providers": {
+        "openai": {
+          "apiKey": "sk-xxxxx"
+        }
+      }
+    },
+    "restart": true
+  }
+}
+```
+
+#### Activar/desactivar un plugin
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "plugins": {
+        "entries": {
+          "krill-agent-init": {
+            "enabled": false
+          }
+        }
+      }
+    },
+    "restart": true
+  }
+}
+```
+
+#### Modificar configuració d'un plugin
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "plugins": {
+        "entries": {
+          "krill-agent-init": {
+            "config": {
+              "autoRegister": true,
+              "gatewayId": "my-new-gateway-id"
+            }
+          }
+        }
+      }
+    },
+    "restart": true
+  }
+}
+```
+
+#### Canviar configuració del canal Matrix
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "channels": {
+        "matrix": {
+          "homeserver": "https://matrix.example.com",
+          "userId": "@bot:example.com"
+        }
+      }
+    },
+    "restart": true
+  }
+}
+```
+
+#### Aplicar canvis sense restart (només guardar)
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "model": "anthropic/claude-opus-4"
+    },
+    "restart": false
+  }
+}
+```
+
+> ⚠️ **Nota:** Amb `restart: false`, els canvis es guarden però no s'apliquen fins al proper restart manual.
+
 ### Resposta `ai.krill.config.update.result`
 
 ```json
