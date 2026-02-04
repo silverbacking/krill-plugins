@@ -37,6 +37,64 @@ Intercepts Matrix messages **before** they reach the LLM and handles:
 
 **Optimization:** Skips LLM test if agent was active in last 5 minutes (saves tokens).
 
+## Plugin Structure (Central Node)
+
+When deploying plugins to the central node for distribution, they **must** follow this exact structure:
+
+```
+/opt/krill/plugins/
+├── krill-agent-init/
+│   ├── clawdbot.plugin.json    # Manifest (MUST be at root!)
+│   ├── index.js                 # Compiled JS (MUST be at root!)
+│   ├── package.json
+│   └── tsconfig.json           # Optional, for reference
+│
+├── krill-matrix-protocol/
+│   ├── clawdbot.plugin.json
+│   ├── index.js
+│   ├── package.json
+│   └── README.md
+│
+└── krill-update/
+    ├── clawdbot.plugin.json
+    ├── index.js
+    ├── package.json
+    └── README.md
+```
+
+### ⚠️ Critical Requirements
+
+| Requirement | ✅ Correct | ❌ Wrong |
+|-------------|-----------|----------|
+| Manifest location | `plugin/clawdbot.plugin.json` | `plugin/src/clawdbot.plugin.json` |
+| Entry point | `plugin/index.js` | `plugin/dist/index.js` |
+| Manifest "main" | `"main": "index.js"` | `"main": "dist/index.js"` |
+| Source files | Remove after compile | Keep `src/` folder |
+
+### Why?
+
+Clawdbot derives the plugin ID from the entry point path. If `index.js` is inside `/dist/`, it will warn:
+```
+WARN: plugin id mismatch (manifest uses "krill-agent-init", entry hints "dist")
+```
+
+### Build & Deploy Workflow
+
+```bash
+# 1. Develop locally with TypeScript
+npm run build                    # Compiles src/index.ts → dist/index.js
+
+# 2. Prepare for central node
+mv dist/index.js ./index.js      # Move to root
+rm -rf dist/ src/                # Remove source folders
+
+# 3. Update manifest
+sed -i 's|dist/index.js|index.js|g' clawdbot.plugin.json
+
+# 4. Deploy to central node
+scp -r ./krill-my-plugin root@central-node:/opt/krill/plugins/
+```
+
 ## Installation
 
 ```bash
