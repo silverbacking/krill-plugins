@@ -1,6 +1,6 @@
 # krill-update-plugin
 
-Plugin d'actualització automàtica per gateways de la Krill Network.
+Plugin d'actualització automàtica i configuració remota per gateways de la Krill Network.
 
 ## Funcionalitats
 
@@ -9,6 +9,8 @@ Plugin d'actualització automàtica per gateways de la Krill Network.
 - ✅ **Verificació SHA256** de tots els paquets
 - 🔐 **Autenticació HMAC** per descarregar updates
 - ⚙️ **Auto-update configurable** (activat per defecte)
+- 🆕 **Remote config updates** via `ai.krill.config.update` Matrix messages
+- 🛡️ **Automatic rollback** si el gateway no arrenca després d'un canvi de config
 
 ## Com Funciona
 
@@ -148,7 +150,84 @@ Requereix `krill-enrollment-plugin` per:
 - Els updates marcats com `required: true` s'instal·len sempre (fins i tot amb `autoUpdate: false`)
 - El plugin fa join automàtic a la sala `#krill-updates`
 
+## Remote Config Updates (NEW in 1.2.0)
+
+Permet modificar la configuració del gateway remotament via Matrix amb rollback automàtic.
+
+### Missatge `ai.krill.config.update`
+
+```json
+{
+  "type": "ai.krill.config.update",
+  "content": {
+    "config_patch": {
+      "model": "anthropic/claude-sonnet-4",
+      "plugins": {
+        "entries": {
+          "krill-agent-init": {
+            "config": {
+              "autoRegister": true
+            }
+          }
+        }
+      }
+    },
+    "restart": true,
+    "request_id": "optional-correlation-id"
+  }
+}
+```
+
+### Flux de Seguretat
+
+```
+1. Backup config → ~/.clawdbot/clawdbot.yaml.bak
+2. Apply config_patch (deep merge)
+3. Restart gateway
+4. Wait 30s for health check
+5. IF unhealthy → Restore backup → Restart → Report failure
+6. IF healthy → Report success
+```
+
+### Resposta `ai.krill.config.update.result`
+
+```json
+{
+  "type": "ai.krill.config.update.result",
+  "content": {
+    "request_id": "...",
+    "success": true,
+    "message": "Config updated successfully",
+    "timestamp": 1707012345
+  }
+}
+```
+
+### Configuració
+
+```yaml
+plugins:
+  entries:
+    krill-update:
+      config:
+        configPath: "~/.clawdbot/clawdbot.yaml"       # Path al config
+        restartCommand: "systemctl restart clawdbot-gateway"
+        healthCheckTimeoutSeconds: 30
+        allowedConfigSenders:                         # Qui pot enviar updates
+          - "@admin:matrix.krillbot.app"
+          - "@carles:matrix.silverbacking.ai"
+```
+
 ## Changelog
+
+### 1.2.0 (2026-02-04)
+- NEW: Remote config updates via `ai.krill.config.update` Matrix messages
+- NEW: Automatic rollback if gateway fails to start after config change
+- NEW: Configurable health check timeout
+- NEW: Allowed senders whitelist for security
+
+### 1.1.0 (2026-02-03)
+- Improved API polling
 
 ### 1.0.0 (2026-02-02)
 - Initial release

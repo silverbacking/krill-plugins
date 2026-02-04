@@ -4,8 +4,19 @@
  * Auto-update system for Krill Network gateways.
  * Uses API polling only (scalable for high volume of agents).
  * 
+ * NEW: Remote config updates via ai.krill.config.update Matrix messages
+ * with automatic rollback if gateway fails to start.
+ * 
  * Depends on: krill-agent-init (for gatewayId/gatewaySecret)
  */
+
+import { execSync, spawn } from "child_process";
+import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync } from "fs";
+import { createHash, createHmac } from "crypto";
+import { pipeline } from "stream/promises";
+import { homedir } from "os";
+import { join } from "path";
+import YAML from "js-yaml";
 
 // Type definition for Clawdbot Plugin API
 interface ClawdbotPluginApi {
@@ -16,16 +27,39 @@ interface ClawdbotPluginApi {
     error?: (msg: string) => void;
   };
   registerCli?: (fn: (ctx: { program: any }) => void, opts?: { commands: string[] }) => void;
+  // Matrix event handling (added for config updates)
+  registerMatrixEventHandler?: (
+    eventType: string,
+    handler: (event: MatrixEvent) => Promise<boolean | void>
+  ) => void;
+  sendMatrixMessage?: (roomId: string, content: any) => Promise<void>;
 }
-import { execSync } from "child_process";
-import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync } from "fs";
-import { createHash, createHmac } from "crypto";
-import { pipeline } from "stream/promises";
+
+// Matrix event structure
+interface MatrixEvent {
+  type: string;
+  room_id: string;
+  sender: string;
+  content: any;
+  event_id: string;
+}
+
+// Config update message content
+interface ConfigUpdateContent {
+  config_patch: Record<string, any>;
+  restart?: boolean;
+  request_id?: string;
+}
 
 interface UpdateConfig {
   apiUrl: string;
   autoUpdate: boolean;
   checkIntervalMinutes: number;
+  // Config update settings
+  configPath: string;
+  restartCommand: string;
+  healthCheckTimeoutSeconds: number;
+  allowedConfigSenders: string[];  // Matrix user IDs allowed to send config updates
 }
 
 interface PluginUpdate {
@@ -43,6 +77,11 @@ const DEFAULT_CONFIG: UpdateConfig = {
   apiUrl: "https://api.krillbot.network",
   autoUpdate: true,
   checkIntervalMinutes: 60,
+  // Config update defaults
+  configPath: join(homedir(), ".clawdbot", "clawdbot.yaml"),
+  restartCommand: "systemctl restart clawdbot-gateway",
+  healthCheckTimeoutSeconds: 30,
+  allowedConfigSenders: [],  // Empty = only admin users allowed
 };
 
 let pluginConfig: UpdateConfig = DEFAULT_CONFIG;
@@ -242,10 +281,246 @@ async function checkForUpdates(): Promise<void> {
   }
 }
 
+// ============================================================================
+// CONFIG UPDATE FUNCTIONALITY
+// ============================================================================
+
+/**
+ * Deep merge two objects (config_patch into base config)
+ */
+function deepMerge(target: any, source: any): any {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
+      result[key] = deepMerge(target[key] || {}, source[key]);
+    } else {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}
+
+/**
+ * Create backup of config file
+ */
+function backupConfig(configPath: string): string {
+  const backupPath = `${configPath}.bak`;
+  if (existsSync(configPath)) {
+    copyFileSync(configPath, backupPath);
+    pluginApi?.logger.info(`[krill-update] 📦 Config backed up to ${backupPath}`);
+  }
+  return backupPath;
+}
+
+/**
+ * Restore config from backup
+ */
+function restoreConfig(configPath: string, backupPath: string): boolean {
+  try {
+    if (existsSync(backupPath)) {
+      copyFileSync(backupPath, configPath);
+      pluginApi?.logger.info(`[krill-update] ⏪ Config restored from backup`);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    pluginApi?.logger.warn(`[krill-update] Failed to restore config: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Apply config patch to YAML file
+ */
+function applyConfigPatch(configPath: string, patch: Record<string, any>): boolean {
+  try {
+    let currentConfig: any = {};
+    if (existsSync(configPath)) {
+      const content = readFileSync(configPath, "utf-8");
+      currentConfig = YAML.load(content) || {};
+    }
+
+    const newConfig = deepMerge(currentConfig, patch);
+    const yamlContent = YAML.dump(newConfig, { lineWidth: 120, noRefs: true });
+    writeFileSync(configPath, yamlContent, "utf-8");
+
+    pluginApi?.logger.info(`[krill-update] ✅ Config patch applied`);
+    return true;
+  } catch (error) {
+    pluginApi?.logger.warn(`[krill-update] Failed to apply config patch: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Restart the gateway
+ */
+function restartGateway(command: string): boolean {
+  try {
+    pluginApi?.logger.info(`[krill-update] 🔄 Restarting gateway: ${command}`);
+    execSync(command, { stdio: "pipe", timeout: 10000 });
+    return true;
+  } catch (error) {
+    pluginApi?.logger.warn(`[krill-update] Restart command failed: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Check if gateway is healthy (responds to health check)
+ */
+async function checkGatewayHealth(timeoutSeconds: number): Promise<boolean> {
+  const logger = pluginApi?.logger;
+  const startTime = Date.now();
+  const timeoutMs = timeoutSeconds * 1000;
+
+  logger?.info(`[krill-update] ⏳ Waiting for gateway to become healthy (${timeoutSeconds}s timeout)...`);
+
+  // Wait a few seconds for the gateway to start
+  await new Promise((r) => setTimeout(r, 5000));
+
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      // Try to connect to the gateway's health endpoint or check process
+      const result = execSync("pgrep -f clawdbot", { stdio: "pipe" }).toString().trim();
+      if (result) {
+        // Process is running, wait a bit more to ensure it's stable
+        await new Promise((r) => setTimeout(r, 3000));
+        
+        // Check again
+        const result2 = execSync("pgrep -f clawdbot", { stdio: "pipe" }).toString().trim();
+        if (result2) {
+          logger?.info(`[krill-update] ✅ Gateway is healthy (PID: ${result2})`);
+          return true;
+        }
+      }
+    } catch (error) {
+      // Process not found, wait and retry
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  logger?.warn(`[krill-update] ❌ Gateway health check timed out`);
+  return false;
+}
+
+/**
+ * Handle ai.krill.config.update Matrix event
+ */
+async function handleConfigUpdate(event: MatrixEvent): Promise<boolean> {
+  const logger = pluginApi?.logger;
+  const content = event.content as ConfigUpdateContent;
+  const requestId = content.request_id || event.event_id;
+
+  logger?.info(`[krill-update] 📨 Received config update request from ${event.sender}`);
+
+  // Security check: verify sender is allowed
+  if (pluginConfig.allowedConfigSenders.length > 0) {
+    if (!pluginConfig.allowedConfigSenders.includes(event.sender)) {
+      logger?.warn(`[krill-update] ⛔ Sender ${event.sender} not in allowed list`);
+      await sendConfigUpdateResult(event.room_id, requestId, false, "Sender not authorized");
+      return true;  // Event handled (rejected)
+    }
+  }
+
+  // Validate content
+  if (!content.config_patch || typeof content.config_patch !== "object") {
+    logger?.warn(`[krill-update] Invalid config_patch in message`);
+    await sendConfigUpdateResult(event.room_id, requestId, false, "Invalid config_patch");
+    return true;
+  }
+
+  const configPath = pluginConfig.configPath;
+  const backupPath = backupConfig(configPath);
+
+  // Apply the patch
+  const patchApplied = applyConfigPatch(configPath, content.config_patch);
+  if (!patchApplied) {
+    await sendConfigUpdateResult(event.room_id, requestId, false, "Failed to apply config patch");
+    return true;
+  }
+
+  // Restart if requested
+  if (content.restart !== false) {
+    const restarted = restartGateway(pluginConfig.restartCommand);
+    if (!restarted) {
+      // Restart command failed, restore backup
+      restoreConfig(configPath, backupPath);
+      await sendConfigUpdateResult(event.room_id, requestId, false, "Restart command failed, config restored");
+      return true;
+    }
+
+    // Wait and check health
+    const isHealthy = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
+    if (!isHealthy) {
+      // Gateway didn't come up, ROLLBACK
+      logger?.warn(`[krill-update] 🚨 Gateway unhealthy! Rolling back config...`);
+      restoreConfig(configPath, backupPath);
+      restartGateway(pluginConfig.restartCommand);
+
+      // Wait for recovery
+      const recovered = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
+      if (recovered) {
+        await sendConfigUpdateResult(
+          event.room_id,
+          requestId,
+          false,
+          "Gateway failed to start with new config. Rolled back successfully."
+        );
+      } else {
+        await sendConfigUpdateResult(
+          event.room_id,
+          requestId,
+          false,
+          "CRITICAL: Gateway failed and rollback may have failed. Manual intervention required!"
+        );
+      }
+      return true;
+    }
+  }
+
+  // Success!
+  logger?.info(`[krill-update] ✅ Config update successful!`);
+  await sendConfigUpdateResult(event.room_id, requestId, true, "Config updated successfully");
+  return true;
+}
+
+/**
+ * Send config update result back via Matrix
+ */
+async function sendConfigUpdateResult(
+  roomId: string,
+  requestId: string,
+  success: boolean,
+  message: string
+): Promise<void> {
+  const response = {
+    type: "ai.krill.config.update.result",
+    content: {
+      request_id: requestId,
+      success,
+      message,
+      timestamp: Math.floor(Date.now() / 1000),
+    },
+  };
+
+  try {
+    if (pluginApi?.sendMatrixMessage) {
+      await pluginApi.sendMatrixMessage(roomId, response);
+    } else {
+      pluginApi?.logger.info(`[krill-update] Result: ${JSON.stringify(response)}`);
+    }
+  } catch (error) {
+    pluginApi?.logger.warn(`[krill-update] Failed to send result: ${error}`);
+  }
+}
+
+// ============================================================================
+
 const plugin = {
   id: "krill-update",
   name: "Krill Update",
-  description: "Auto-update plugin for Krill Network gateways (API polling)",
+  description: "Auto-update plugin for Krill Network gateways with remote config updates",
 
   configSchema: {
     type: "object",
@@ -265,6 +540,27 @@ const plugin = {
         description: "Minutes between update checks (0 to disable)",
         default: 60,
       },
+      configPath: {
+        type: "string",
+        description: "Path to the gateway config file (clawdbot.yaml)",
+        default: "~/.clawdbot/clawdbot.yaml",
+      },
+      restartCommand: {
+        type: "string",
+        description: "Command to restart the gateway after config changes",
+        default: "systemctl restart clawdbot-gateway",
+      },
+      healthCheckTimeoutSeconds: {
+        type: "number",
+        description: "Seconds to wait for gateway to become healthy after restart",
+        default: 30,
+      },
+      allowedConfigSenders: {
+        type: "array",
+        items: { type: "string" },
+        description: "Matrix user IDs allowed to send config updates (empty = admin only)",
+        default: [],
+      },
     },
   },
 
@@ -277,10 +573,24 @@ const plugin = {
       | undefined;
     pluginConfig = { ...DEFAULT_CONFIG, ...config };
 
+    // Expand ~ in configPath
+    if (pluginConfig.configPath.startsWith("~")) {
+      pluginConfig.configPath = pluginConfig.configPath.replace("~", homedir());
+    }
+
     api.logger.info(`[krill-update] ✅ Plugin loaded`);
     api.logger.info(`[krill-update] API: ${pluginConfig.apiUrl}`);
     api.logger.info(`[krill-update] Auto-update: ${pluginConfig.autoUpdate}`);
     api.logger.info(`[krill-update] Check interval: ${pluginConfig.checkIntervalMinutes} min`);
+    api.logger.info(`[krill-update] Config path: ${pluginConfig.configPath}`);
+
+    // Register Matrix event handler for config updates
+    if (api.registerMatrixEventHandler) {
+      api.registerMatrixEventHandler("ai.krill.config.update", handleConfigUpdate);
+      api.logger.info(`[krill-update] 📡 Registered handler for ai.krill.config.update`);
+    } else {
+      api.logger.warn(`[krill-update] Matrix event handler registration not available`);
+    }
 
     // Start periodic check
     if (pluginConfig.checkIntervalMinutes > 0) {
