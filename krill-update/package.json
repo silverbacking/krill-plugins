@@ -1,5 +1,5 @@
 {
-  "name": "krill-update-plugin",
+  "name": "krill-update",
   "version": "1.2.0",
   "description": "Auto-update plugin for Krill Network gateways with remote config updates",
   "main": "dist/index.js",

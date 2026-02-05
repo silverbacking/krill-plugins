@@ -268,20 +268,11 @@ const plugin = {
 
     // Schedule enrollment after Matrix connects
     setTimeout(async () => {
-      // Register gateway with API
+      // Register gateway with API (agent already in DB via /v1/provision/agent)
       if (config.krillApiUrl) {
         await registerGateway(api, config);
       } else {
         api.logger.info("[krill-init] No krillApiUrl — skipping API registration");
-      }
-
-      // Enroll in registry room
-      if (!config.registryRoomId) {
-        api.logger.warn("[krill-init] ⚠️ No registryRoomId configured — skipping registry enrollment");
-      } else if (!matrixConfig?.homeserver || !matrixConfig?.accessToken) {
-        api.logger.warn("[krill-init] ⚠️ Missing Matrix credentials — skipping registry enrollment");
-      } else {
-        await enrollInRegistry(api, config, matrixConfig.homeserver, matrixConfig.accessToken);
       }
 
       api.logger.info("[krill-init] ✅ Init complete");
