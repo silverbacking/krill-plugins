@@ -45,7 +45,7 @@ const configSchema = {
       required: ["mxid", "displayName"],
     },
   },
-  required: ["gatewayId", "gatewaySecret"],
+  required: [],  // gatewayId/gatewaySecret are auto-provisioned by krill-agent-init
 };
 
 export interface KrillProtocolConfig {

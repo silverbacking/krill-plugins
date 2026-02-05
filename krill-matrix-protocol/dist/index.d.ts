@@ -60,7 +60,7 @@ declare const plugin: {
                 required: string[];
             };
         };
-        required: string[];
+        required: any[];
     };
     register(api: ClawdbotPluginApi): void;
 };

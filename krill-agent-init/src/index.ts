@@ -77,7 +77,7 @@ const configSchema = {
       },
     },
   },
-  required: ["displayName", "krillApiUrl"],
+  required: [],  // No required fields — gatewayId/gatewaySecret/agent are auto-provisioned
 };
 
 interface AgentInitConfig {
