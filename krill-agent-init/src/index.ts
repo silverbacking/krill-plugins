@@ -1,23 +1,18 @@
 /**
  * Krill Agent Init Plugin
- * 
- * Handles agent provisioning and enrollment to the Krill Network:
- * 
- * First boot (no credentials):
- *   1. Calls Krill API to provision Matrix user
- *   2. Stores credentials in clawdbot.json
- *   3. Triggers gateway restart to connect with new credentials
- * 
- * Subsequent boots (has credentials):
+ *
+ * Handles agent enrollment to the Krill Network on boot:
  *   1. Joins the registry room
  *   2. Publishes ai.krill.agent state event
- *   3. Registers with Krill API
+ *   3. Registers gateway with Krill API
+ *
+ * Provisioning (creating Matrix user, getting credentials) is handled
+ * by the setup scripts BEFORE the gateway starts. This plugin only
+ * does enrollment with existing credentials.
  */
 
 import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
 import crypto from "crypto";
-import fs from "fs";
-import path from "path";
 
 // ── Config Schema ────────────────────────────────────────────────────
 
@@ -26,7 +21,7 @@ const configSchema = {
   properties: {
     agentName: {
       type: "string",
-      description: "Desired agent username (lowercase, alphanumeric)",
+      description: "Agent username (lowercase, alphanumeric)",
     },
     displayName: {
       type: "string",
@@ -57,27 +52,27 @@ const configSchema = {
       type: "string",
       description: "Matrix room ID for agent registry (optional)",
     },
-    // Legacy fields (used if credentials already exist)
     gatewayId: {
       type: "string",
-      description: "Gateway ID (auto-generated if not set)",
+      description: "Gateway ID (set by setup script)",
     },
     gatewaySecret: {
       type: "string",
-      description: "Gateway secret (auto-generated if not set)",
+      description: "Gateway secret (set by setup script)",
     },
     agent: {
       type: "object",
-      description: "Legacy agent config (mxid, displayName)",
+      description: "Agent identity (set by setup script)",
       properties: {
         mxid: { type: "string" },
         displayName: { type: "string" },
         description: { type: "string" },
         capabilities: { type: "array", items: { type: "string" } },
       },
+      required: ["mxid", "displayName"],
     },
   },
-  required: [],  // No required fields — gatewayId/gatewaySecret/agent are auto-provisioned
+  required: ["gatewayId", "gatewaySecret", "agent"],
 };
 
 interface AgentInitConfig {
@@ -86,33 +81,16 @@ interface AgentInitConfig {
   description?: string;
   capabilities?: string[];
   model?: string;
-  krillApiUrl: string;
+  krillApiUrl?: string;
   krillApiKey?: string;
   registryRoomId?: string;
-  gatewayId?: string;
-  gatewaySecret?: string;
-  agent?: {
+  gatewayId: string;
+  gatewaySecret: string;
+  agent: {
     mxid: string;
     displayName: string;
     description?: string;
     capabilities?: string[];
-  };
-}
-
-interface ProvisionResponse {
-  agent: {
-    id: string;
-    mxid: string;
-    displayName: string;
-    description: string;
-    capabilities: string[];
-  };
-  credentials: {
-    accessToken: string;
-    deviceId: string;
-    homeserver: string;
-    gatewayId: string;
-    gatewaySecret: string;
   };
 }
 
@@ -129,135 +107,6 @@ function generateVerificationHash(
 }
 
 /**
- * Check if Matrix credentials exist in the config.
- */
-function hasMatrixCredentials(api: ClawdbotPluginApi): boolean {
-  const matrixConfig = (api.config as any)?.channels?.matrix;
-  return !!(matrixConfig?.accessToken && matrixConfig?.userId);
-}
-
-/**
- * Get the clawdbot.json path.
- */
-function getConfigPath(): string {
-  const home = process.env.HOME || "/home/carles";
-  return path.join(home, ".clawdbot", "clawdbot.json");
-}
-
-/**
- * Call the Krill API to provision a new agent.
- */
-async function provisionAgent(
-  api: ClawdbotPluginApi,
-  config: AgentInitConfig
-): Promise<ProvisionResponse | null> {
-  const { krillApiUrl, krillApiKey, agentName, displayName, description, capabilities, model } = config;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  // Auth: API key or gateway credentials
-  if (krillApiKey) {
-    headers["x-api-key"] = krillApiKey;
-  } else if (config.gatewayId && config.gatewaySecret) {
-    headers["x-gateway-id"] = config.gatewayId;
-    headers["x-gateway-secret"] = config.gatewaySecret;
-  }
-
-  const body = {
-    agentName: agentName || displayName.toLowerCase().replace(/[^a-z0-9]/g, ""),
-    displayName,
-    description: description || `${displayName} - Krill Network Agent`,
-    capabilities: capabilities || ["chat"],
-    model: model || "unknown",
-    isPublic: false,
-  };
-
-  api.logger.info(`[krill-init] Provisioning agent "${displayName}" via ${krillApiUrl}...`);
-
-  try {
-    const res = await fetch(`${krillApiUrl}/v1/provision/agent`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const error = await res.json().catch(() => ({})) as any;
-      api.logger.error(
-        `[krill-init] Provisioning failed: ${res.status} - ${error.error?.code || "Unknown"}: ${error.error?.message || res.statusText}`
-      );
-      return null;
-    }
-
-    const result = (await res.json()) as ProvisionResponse;
-    api.logger.info(`[krill-init] ✅ Agent provisioned: ${result.agent.mxid}`);
-    return result;
-  } catch (error: any) {
-    api.logger.error(`[krill-init] Provisioning request failed: ${error.message}`);
-    return null;
-  }
-}
-
-/**
- * Save provisioned credentials to clawdbot.json.
- */
-function saveCredentials(
-  api: ClawdbotPluginApi,
-  provision: ProvisionResponse
-): boolean {
-  const configPath = getConfigPath();
-
-  try {
-    const raw = fs.readFileSync(configPath, "utf-8");
-    const clawdbotConfig = JSON.parse(raw);
-
-    // Set Matrix channel credentials
-    if (!clawdbotConfig.channels) clawdbotConfig.channels = {};
-    if (!clawdbotConfig.channels.matrix) clawdbotConfig.channels.matrix = {};
-
-    clawdbotConfig.channels.matrix.enabled = true;
-    clawdbotConfig.channels.matrix.homeserver = provision.credentials.homeserver;
-    clawdbotConfig.channels.matrix.userId = provision.agent.mxid;
-    clawdbotConfig.channels.matrix.accessToken = provision.credentials.accessToken;
-    clawdbotConfig.channels.matrix.deviceName = provision.credentials.deviceId;
-
-    // Update plugin config with provisioned values
-    const pluginConfig = clawdbotConfig.plugins?.entries?.["krill-agent-init"]?.config;
-    if (pluginConfig) {
-      pluginConfig.gatewayId = provision.credentials.gatewayId;
-      pluginConfig.gatewaySecret = provision.credentials.gatewaySecret;
-      pluginConfig.agent = {
-        mxid: provision.agent.mxid,
-        displayName: provision.agent.displayName,
-        description: provision.agent.description,
-        capabilities: provision.agent.capabilities,
-      };
-    }
-
-    // Also update krill-matrix-protocol if present
-    const protocolConfig = clawdbotConfig.plugins?.entries?.["krill-matrix-protocol"]?.config;
-    if (protocolConfig) {
-      protocolConfig.gatewayId = provision.credentials.gatewayId;
-      protocolConfig.gatewaySecret = provision.credentials.gatewaySecret;
-      protocolConfig.agent = {
-        mxid: provision.agent.mxid,
-        displayName: provision.agent.displayName,
-        capabilities: provision.agent.capabilities,
-      };
-    }
-
-    fs.writeFileSync(configPath, JSON.stringify(clawdbotConfig, null, 2));
-    api.logger.info(`[krill-init] ✅ Credentials saved to ${configPath}`);
-    return true;
-  } catch (error: any) {
-    api.logger.error(`[krill-init] Failed to save credentials: ${error.message}`);
-    return false;
-  }
-}
-
-/**
  * Enroll agent in the registry room via Matrix state event.
  */
 async function enrollInRegistry(
@@ -266,13 +115,10 @@ async function enrollInRegistry(
   matrixHomeserver: string,
   accessToken: string
 ): Promise<boolean> {
-  const agentMxid = config.agent?.mxid;
-  const gatewayId = config.gatewayId;
-  const gatewaySecret = config.gatewaySecret;
-  const registryRoomId = config.registryRoomId;
+  const { agent, gatewayId, gatewaySecret, registryRoomId } = config;
 
-  if (!registryRoomId || !agentMxid || !gatewayId || !gatewaySecret) {
-    api.logger.info("[krill-init] Skipping registry enrollment (missing config)");
+  if (!registryRoomId) {
+    api.logger.info("[krill-init] No registry room configured — skipping");
     return false;
   }
 
@@ -293,14 +139,14 @@ async function enrollInRegistry(
 
     // Check if already enrolled
     const stateRes = await fetch(
-      `${matrixHomeserver}/_matrix/client/v3/rooms/${encodeURIComponent(registryRoomId)}/state/ai.krill.agent/${encodeURIComponent(agentMxid)}`,
+      `${matrixHomeserver}/_matrix/client/v3/rooms/${encodeURIComponent(registryRoomId)}/state/ai.krill.agent/${encodeURIComponent(agent.mxid)}`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
     if (stateRes.ok) {
       const existing = (await stateRes.json()) as any;
       if (existing.gateway_id === gatewayId) {
-        api.logger.info(`[krill-init] ✅ Already enrolled: ${agentMxid}`);
+        api.logger.info(`[krill-init] ✅ Already enrolled: ${agent.mxid}`);
         return true;
       }
     }
@@ -309,22 +155,22 @@ async function enrollInRegistry(
     const enrolledAt = Math.floor(Date.now() / 1000);
     const verificationHash = generateVerificationHash(
       gatewaySecret,
-      agentMxid,
+      agent.mxid,
       gatewayId,
       enrolledAt
     );
 
     const stateContent = {
       gateway_id: gatewayId,
-      display_name: config.agent?.displayName || config.displayName,
-      description: config.agent?.description || config.description || `${config.displayName} - Krill Network Agent`,
-      capabilities: config.agent?.capabilities || config.capabilities || ["chat"],
+      display_name: agent.displayName,
+      description: agent.description || config.description || `${agent.displayName} - Krill Network Agent`,
+      capabilities: agent.capabilities || config.capabilities || ["chat"],
       enrolled_at: enrolledAt,
       verification_hash: verificationHash,
     };
 
     const enrollRes = await fetch(
-      `${matrixHomeserver}/_matrix/client/v3/rooms/${encodeURIComponent(registryRoomId)}/state/ai.krill.agent/${encodeURIComponent(agentMxid)}`,
+      `${matrixHomeserver}/_matrix/client/v3/rooms/${encodeURIComponent(registryRoomId)}/state/ai.krill.agent/${encodeURIComponent(agent.mxid)}`,
       {
         method: "PUT",
         headers: {
@@ -336,7 +182,7 @@ async function enrollInRegistry(
     );
 
     if (enrollRes.ok) {
-      api.logger.info(`[krill-init] ✅ Enrolled in registry: ${agentMxid}`);
+      api.logger.info(`[krill-init] ✅ Enrolled in registry: ${agent.mxid}`);
       return true;
     } else {
       const error = await enrollRes.text();
@@ -358,13 +204,9 @@ async function registerGateway(
 ): Promise<boolean> {
   const { gatewayId, gatewaySecret, krillApiUrl } = config;
 
-  if (!krillApiUrl || !gatewayId || !gatewaySecret) {
-    return false;
-  }
+  if (!krillApiUrl) return false;
 
   try {
-    const publicKey = crypto.createHash("sha256").update(gatewaySecret).digest("hex");
-
     const res = await fetch(`${krillApiUrl}/v1/gateways/register`, {
       method: "POST",
       headers: {
@@ -373,7 +215,7 @@ async function registerGateway(
         "x-gateway-secret": gatewaySecret,
       },
       body: JSON.stringify({
-        serverIp: "0.0.0.0", // Will be detected by API
+        serverIp: "0.0.0.0",
         version: "1.0.0",
         hostname: gatewayId,
       }),
@@ -395,7 +237,7 @@ async function registerGateway(
 const plugin = {
   id: "krill-agent-init",
   name: "Krill Agent Init",
-  description: "Auto-provisioning and enrollment of agents to the Krill Network",
+  description: "Enrollment of agents to the Krill Network",
   configSchema,
 
   register(api: ClawdbotPluginApi) {
@@ -408,59 +250,24 @@ const plugin = {
       return;
     }
 
-    api.logger.info(`[krill-init] Initializing: "${config.displayName}"`);
-
-    // ── Phase 1: Check if we need provisioning ──
-    if (!hasMatrixCredentials(api)) {
-      api.logger.info("[krill-init] No Matrix credentials found — starting provisioning...");
-
-      // Provision immediately (don't wait for Matrix — it's not connected yet!)
-      (async () => {
-        const result = await provisionAgent(api, config);
-
-        if (!result) {
-          api.logger.error("[krill-init] ❌ Provisioning failed. Agent will not be available.");
-          return;
-        }
-
-        // Save credentials to clawdbot.json
-        const saved = saveCredentials(api, result);
-        if (!saved) {
-          api.logger.error("[krill-init] ❌ Failed to save credentials.");
-          return;
-        }
-
-        // Request gateway restart to pick up new Matrix credentials
-        api.logger.info("[krill-init] 🔄 Credentials saved. Requesting gateway restart...");
-        
-        // Give the config write a moment to flush
-        setTimeout(() => {
-          api.logger.info("[krill-init] Sending SIGUSR1 for config reload...");
-          process.kill(process.pid, "SIGUSR1");
-        }, 2000);
-      })();
-
-      return; // Don't proceed to enrollment — will happen after restart
-    }
-
-    // ── Phase 2: Already have credentials — do enrollment ──
-    api.logger.info("[krill-init] Matrix credentials found — scheduling enrollment...");
+    api.logger.info(`[krill-init] Initializing: "${config.agent.displayName}" (${config.agent.mxid})`);
 
     const matrixConfig = (api.config as any)?.channels?.matrix;
 
+    // Schedule enrollment after Matrix connects
     setTimeout(async () => {
       // Register gateway with API
-      if (config.krillApiUrl && config.gatewayId) {
+      if (config.krillApiUrl) {
         await registerGateway(api, config);
       }
 
       // Enroll in registry room
-      if (matrixConfig?.homeserver && matrixConfig?.accessToken) {
+      if (matrixConfig?.homeserver && matrixConfig?.accessToken && config.registryRoomId) {
         await enrollInRegistry(api, config, matrixConfig.homeserver, matrixConfig.accessToken);
       }
 
       api.logger.info("[krill-init] ✅ Init complete");
-    }, 10000); // Wait 10s for Matrix to connect
+    }, 10000);
   },
 };
 

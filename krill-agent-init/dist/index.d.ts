@@ -1,17 +1,14 @@
 /**
  * Krill Agent Init Plugin
  *
- * Handles agent provisioning and enrollment to the Krill Network:
- *
- * First boot (no credentials):
- *   1. Calls Krill API to provision Matrix user
- *   2. Stores credentials in clawdbot.json
- *   3. Triggers gateway restart to connect with new credentials
- *
- * Subsequent boots (has credentials):
+ * Handles agent enrollment to the Krill Network on boot:
  *   1. Joins the registry room
  *   2. Publishes ai.krill.agent state event
- *   3. Registers with Krill API
+ *   3. Registers gateway with Krill API
+ *
+ * Provisioning (creating Matrix user, getting credentials) is handled
+ * by the setup scripts BEFORE the gateway starts. This plugin only
+ * does enrollment with existing credentials.
  */
 import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
 declare const plugin: {
@@ -84,9 +81,10 @@ declare const plugin: {
                         };
                     };
                 };
+                required: string[];
             };
         };
-        required: any[];
+        required: string[];
     };
     register(api: ClawdbotPluginApi): void;
 };
