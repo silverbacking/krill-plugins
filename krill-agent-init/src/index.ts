@@ -246,7 +246,19 @@ const plugin = {
       | undefined;
 
     if (!config) {
-      api.logger.warn("[krill-init] No config found, plugin disabled");
+      api.logger.warn("[krill-init] No config found — plugin disabled");
+      return;
+    }
+
+    // Validate required fields
+    const missing: string[] = [];
+    if (!config.gatewayId) missing.push("gatewayId");
+    if (!config.gatewaySecret) missing.push("gatewaySecret");
+    if (!config.agent?.mxid) missing.push("agent.mxid");
+    if (!config.agent?.displayName) missing.push("agent.displayName");
+
+    if (missing.length > 0) {
+      api.logger.warn(`[krill-init] ⚠️ Missing required config: ${missing.join(", ")} — skipping enrollment`);
       return;
     }
 
@@ -259,10 +271,16 @@ const plugin = {
       // Register gateway with API
       if (config.krillApiUrl) {
         await registerGateway(api, config);
+      } else {
+        api.logger.info("[krill-init] No krillApiUrl — skipping API registration");
       }
 
       // Enroll in registry room
-      if (matrixConfig?.homeserver && matrixConfig?.accessToken && config.registryRoomId) {
+      if (!config.registryRoomId) {
+        api.logger.warn("[krill-init] ⚠️ No registryRoomId configured — skipping registry enrollment");
+      } else if (!matrixConfig?.homeserver || !matrixConfig?.accessToken) {
+        api.logger.warn("[krill-init] ⚠️ Missing Matrix credentials — skipping registry enrollment");
+      } else {
         await enrollInRegistry(api, config, matrixConfig.homeserver, matrixConfig.accessToken);
       }
 
