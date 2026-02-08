@@ -59,6 +59,28 @@ declare const plugin: {
                 };
                 required: string[];
             };
+            config: {
+                type: string;
+                description: string;
+                properties: {
+                    allowedConfigSenders: {
+                        type: string;
+                        items: {
+                            type: string;
+                        };
+                        description: string;
+                    };
+                    configPath: {
+                        type: string;
+                    };
+                    restartCommand: {
+                        type: string;
+                    };
+                    healthCheckTimeoutSeconds: {
+                        type: string;
+                    };
+                };
+            };
         };
         required: any[];
     };

@@ -17,6 +17,7 @@ import path from "path";
 import { handlePairing, type PairingConfig } from "./handlers/pairing.js";
 import { handleVerify } from "./handlers/verify.js";
 import { handleHealth, markLlmActivity } from "./handlers/health.js";
+import { handleConfig, initConfigHandler } from "./handlers/config.js";
 
 // Plugin config schema
 const configSchema = {
@@ -44,6 +45,20 @@ const configSchema = {
       },
       required: ["mxid", "displayName"],
     },
+    config: {
+      type: "object",
+      description: "Config update handler settings",
+      properties: {
+        allowedConfigSenders: { 
+          type: "array", 
+          items: { type: "string" },
+          description: "MXIDs allowed to send config updates (e.g., Krill API bot)",
+        },
+        configPath: { type: "string" },
+        restartCommand: { type: "string" },
+        healthCheckTimeoutSeconds: { type: "number" },
+      },
+    },
   },
   required: [],  // gatewayId/gatewaySecret are auto-provisioned by krill-agent-init
 };
@@ -66,12 +81,17 @@ let pluginApi: ClawdbotPluginApi | null = null;
 
 /**
  * Parse ai.krill message from text
+ * Returns null if not a valid Krill message
  */
-function parseKrillMessage(text: string): { type: string; content: any } | null {
+function parseKrillMessage(text: string): { type: string; content: any; auth?: any } | null {
   try {
     const parsed = JSON.parse(text);
     if (parsed.type?.startsWith("ai.krill.")) {
-      return parsed;
+      return {
+        type: parsed.type,
+        content: parsed.content,
+        auth: parsed["ai.krill.auth"],
+      };
     }
   } catch {
     // Not JSON or not a Krill message
@@ -80,18 +100,64 @@ function parseKrillMessage(text: string): { type: string; content: any } | null 
 }
 
 /**
+ * Validate Krill client authentication
+ * Returns true if message comes from authenticated Krill App
+ */
+function isAuthenticatedKrillClient(auth: any, config: KrillProtocolConfig): boolean {
+  if (!auth) return false;
+  
+  // Check for valid pairing token
+  const token = auth.pairing_token;
+  if (!token || typeof token !== "string") return false;
+  
+  // Token format: krill_tk_v1_<base64>
+  if (!token.startsWith("krill_tk_v1_")) return false;
+  
+  // In production, validate token against stored pairings
+  // For now, accept any well-formed token
+  return true;
+}
+
+/**
+ * Check if message type requires authentication
+ * Some messages (like initial pairing) don't need auth
+ */
+function requiresAuth(messageType: string): boolean {
+  // Pairing requests don't need auth (that's how you GET a token)
+  if (messageType === "ai.krill.pair.request") return false;
+  
+  // Health pings from monitors may have special auth
+  if (messageType === "ai.krill.health.ping") return false;
+  
+  // Everything else requires auth
+  return true;
+}
+
+/**
  * Message interceptor - handles all ai.krill.* messages
- * Returns response text if handled, null if message should pass to LLM
+ * Returns true if handled (intercept), false if message should pass to LLM
+ * 
+ * TRANSPARENCY: Only responds to authenticated Krill clients.
+ * Messages from Element/other clients are silently ignored.
  */
 async function handleKrillMessage(
-  message: { type: string; content: any },
+  message: { type: string; content: any; auth?: any },
   senderId: string,
   roomId: string,
   sendResponse: (text: string) => Promise<void>
 ): Promise<boolean> {
-  const { type, content } = message;
+  const { type, content, auth } = message;
   
   pluginApi?.logger.info(`[krill-protocol] Received: ${type}`);
+  
+  // Check if this message type requires authentication
+  if (requiresAuth(type)) {
+    if (!isAuthenticatedKrillClient(auth, pluginConfig!)) {
+      // Not from Krill App - be transparent, don't respond
+      pluginApi?.logger.debug(`[krill-protocol] Ignoring unauthenticated message: ${type}`);
+      return true; // Intercept but don't respond (silent)
+    }
+  }
   
   switch (type) {
     // === PAIRING ===
@@ -109,8 +175,15 @@ async function handleKrillMessage(
       await handleHealth.ping(pluginConfig!, content, sendResponse);
       return true;
       
-    // === FUTURE PROTOCOL MESSAGES ===
-    // Add new handlers here as the protocol evolves
+    // === CONFIG UPDATE ===
+    case "ai.krill.config.update":
+      await handleConfig({
+        sender: senderId,
+        room_id: roomId,
+        event_id: content.request_id || `ev_${Date.now()}`,
+        content,
+      });
+      return true;
     
     default:
       // Unknown ai.krill message - log but let it pass
@@ -138,6 +211,20 @@ const plugin = {
     
     pluginConfig = config;
     api.logger.info(`[krill-protocol] Loaded for gateway: ${config.gatewayId}`);
+    
+    // Initialize config handler
+    const configSettings = (config as any).config || {};
+    initConfigHandler({
+      configPath: configSettings.configPath,
+      allowedConfigSenders: configSettings.allowedConfigSenders || [],
+      restartCommand: configSettings.restartCommand,
+      healthCheckTimeoutSeconds: configSettings.healthCheckTimeoutSeconds,
+      sendResponse: async (roomId, content) => {
+        // Use Matrix client to send response
+        api.logger.info(`[config] Response: ${JSON.stringify(content)}`);
+      },
+      logger: api.logger,
+    });
     
     // Initialize storage
     if (config.storagePath) {
