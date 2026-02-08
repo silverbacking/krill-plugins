@@ -81,6 +81,36 @@ declare const plugin: {
                     };
                 };
             };
+            access: {
+                type: string;
+                description: string;
+                properties: {
+                    enabled: {
+                        type: string;
+                        description: string;
+                    };
+                    krillApiUrl: {
+                        type: string;
+                        description: string;
+                    };
+                    maxPinAttempts: {
+                        type: string;
+                        description: string;
+                    };
+                    pinPromptMessage: {
+                        type: string;
+                    };
+                    pinSuccessMessage: {
+                        type: string;
+                    };
+                    pinFailureMessage: {
+                        type: string;
+                    };
+                    pinBlockedMessage: {
+                        type: string;
+                    };
+                };
+            };
         };
         required: any[];
     };

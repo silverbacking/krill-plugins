@@ -14,6 +14,7 @@ import { handlePairing } from "./handlers/pairing.js";
 import { handleVerify } from "./handlers/verify.js";
 import { handleHealth, markLlmActivity } from "./handlers/health.js";
 import { handleConfig, initConfigHandler } from "./handlers/config.js";
+import { handleAccess, initAccessHandler, markVerified } from "./handlers/access.js";
 // Plugin config schema
 const configSchema = {
     type: "object",
@@ -52,6 +53,19 @@ const configSchema = {
                 configPath: { type: "string" },
                 restartCommand: { type: "string" },
                 healthCheckTimeoutSeconds: { type: "number" },
+            },
+        },
+        access: {
+            type: "object",
+            description: "PIN verification settings for new users",
+            properties: {
+                enabled: { type: "boolean", description: "Enable PIN verification for new users" },
+                krillApiUrl: { type: "string", description: "Krill API URL for PIN verification" },
+                maxPinAttempts: { type: "number", description: "Max failed attempts before blocking" },
+                pinPromptMessage: { type: "string" },
+                pinSuccessMessage: { type: "string" },
+                pinFailureMessage: { type: "string" },
+                pinBlockedMessage: { type: "string" },
             },
         },
     },
@@ -186,6 +200,20 @@ const plugin = {
             },
             logger: api.logger,
         });
+        // Initialize access handler (PIN verification)
+        const accessSettings = config.access || {};
+        if (accessSettings.enabled !== false) {
+            initAccessHandler({
+                storagePath: config.storagePath || path.join(process.env.HOME || "", ".openclaw", "krill"),
+                krillApiUrl: accessSettings.krillApiUrl || "https://api.krillbot.network",
+                maxPinAttempts: accessSettings.maxPinAttempts,
+                pinPromptMessage: accessSettings.pinPromptMessage,
+                pinSuccessMessage: accessSettings.pinSuccessMessage,
+                pinFailureMessage: accessSettings.pinFailureMessage,
+                pinBlockedMessage: accessSettings.pinBlockedMessage,
+                logger: api.logger,
+            });
+        }
         // Initialize storage
         if (config.storagePath) {
             const dir = path.dirname(config.storagePath);
@@ -197,18 +225,36 @@ const plugin = {
         // This intercepts messages BEFORE they reach the LLM
         api.registerMessageInterceptor?.(async (ctx) => {
             const text = ctx.message?.text || ctx.message?.body || "";
+            const senderId = ctx.senderId || "";
             const krillMsg = parseKrillMessage(text);
-            if (!krillMsg) {
-                // Not a Krill message - mark LLM activity and pass through
-                markLlmActivity(); // Any non-protocol message = LLM is active
-                return { handled: false };
+            // Handle Krill protocol messages (ai.krill.*)
+            if (krillMsg) {
+                const sendResponse = async (responseText) => {
+                    await ctx.reply?.(responseText);
+                };
+                const handled = await handleKrillMessage(krillMsg, senderId, ctx.roomId || "", sendResponse);
+                // If pairing completed, mark user as verified
+                if (krillMsg.type === "ai.krill.pair.complete") {
+                    markVerified(senderId);
+                }
+                return { handled };
             }
-            // Handle the Krill message
-            const sendResponse = async (responseText) => {
-                await ctx.reply?.(responseText);
-            };
-            const handled = await handleKrillMessage(krillMsg, ctx.senderId || "", ctx.roomId || "", sendResponse);
-            return { handled };
+            // Not a Krill message - check if user needs PIN verification
+            // (Only for users on allowlist but not yet verified)
+            const accessSettings = pluginConfig?.access || {};
+            if (accessSettings.enabled !== false) {
+                const accessResult = await handleAccess(senderId, text);
+                if (!accessResult.allowed) {
+                    // User needs to verify PIN
+                    if (accessResult.response) {
+                        await ctx.reply?.(accessResult.response);
+                    }
+                    return { handled: true }; // Don't pass to LLM
+                }
+            }
+            // User is verified or access control disabled - pass to LLM
+            markLlmActivity(); // Any non-protocol message = LLM is active
+            return { handled: false };
         });
         // Register HTTP endpoints for backwards compatibility
         api.registerHttpHandler(async (req, res) => {
