@@ -19,6 +19,7 @@ import { handleVerify } from "./handlers/verify.js";
 import { handleHealth, markLlmActivity } from "./handlers/health.js";
 import { handleConfig, initConfigHandler } from "./handlers/config.js";
 import { handleAccess, initAccessHandler, isVerified, markVerified } from "./handlers/access.js";
+import { handleAllowlist, initAllowlistHandler } from "./handlers/allowlist.js";
 
 // Plugin config schema
 const configSchema = {
@@ -71,6 +72,21 @@ const configSchema = {
         pinSuccessMessage: { type: "string" },
         pinFailureMessage: { type: "string" },
         pinBlockedMessage: { type: "string" },
+      },
+    },
+    allowlist: {
+      type: "object",
+      description: "Allowlist management settings (for hire/unhire)",
+      properties: {
+        allowedSenders: {
+          type: "array",
+          items: { type: "string" },
+          description: "MXIDs allowed to modify allowlist (e.g., Krill API bot)",
+        },
+        configPath: {
+          type: "string",
+          description: "Path to openclaw.json (default: ~/.openclaw/openclaw.json)",
+        },
       },
     },
   },
@@ -199,6 +215,11 @@ async function handleKrillMessage(
       });
       return true;
     
+    // === ALLOWLIST MANAGEMENT ===
+    case "ai.krill.allowlist":
+      await handleAllowlist(content, senderId, sendResponse);
+      return true;
+    
     default:
       // Unknown ai.krill message - log but let it pass
       pluginApi?.logger.warn(`[krill-protocol] Unknown message type: ${type}`);
@@ -254,6 +275,14 @@ const plugin = {
         logger: api.logger,
       });
     }
+    
+    // Initialize allowlist handler (for hire/unhire)
+    const allowlistSettings = (config as any).allowlist || {};
+    initAllowlistHandler({
+      configPath: allowlistSettings.configPath,
+      allowedSenders: allowlistSettings.allowedSenders || [],
+      logger: api.logger,
+    });
     
     // Initialize storage
     if (config.storagePath) {
