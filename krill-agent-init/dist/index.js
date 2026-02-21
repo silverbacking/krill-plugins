@@ -1,53 +1,17 @@
 /**
  * Krill Agent Init Plugin
  *
- * Handles agent enrollment to the Krill Network on boot:
- *   1. Joins the registry room
- *   2. Publishes ai.krill.agent state event
- *   3. Registers gateway with Krill API
+ * Registers the gateway with the Krill API on startup via check-in.
+ * Collects system info (OS, arch, hostname, Node version, OpenClaw version, plugins).
  *
  * Provisioning (creating Matrix user, getting credentials) is handled
- * by the setup scripts BEFORE the gateway starts. This plugin only
- * does enrollment with existing credentials.
+ * by setup-gateway-node.sh BEFORE the gateway starts.
  */
-import crypto from "crypto";
+import os from "os";
 // ── Config Schema ────────────────────────────────────────────────────
 const configSchema = {
     type: "object",
     properties: {
-        agentName: {
-            type: "string",
-            description: "Agent username (lowercase, alphanumeric)",
-        },
-        displayName: {
-            type: "string",
-            description: "Human-readable display name",
-        },
-        description: {
-            type: "string",
-            description: "Short description of the agent",
-        },
-        capabilities: {
-            type: "array",
-            items: { type: "string" },
-            description: "Agent capabilities (e.g., chat, senses)",
-        },
-        model: {
-            type: "string",
-            description: "LLM model identifier",
-        },
-        krillApiUrl: {
-            type: "string",
-            description: "Krill API URL (e.g., https://api.krillbot.network)",
-        },
-        krillApiKey: {
-            type: "string",
-            description: "API key for Krill API authentication",
-        },
-        registryRoomId: {
-            type: "string",
-            description: "Matrix room ID for agent registry (optional)",
-        },
         gatewayId: {
             type: "string",
             description: "Gateway ID (set by setup script)",
@@ -56,6 +20,10 @@ const configSchema = {
             type: "string",
             description: "Gateway secret (set by setup script)",
         },
+        krillApiUrl: {
+            type: "string",
+            description: "Krill API URL (e.g., https://api.krillbot.network)",
+        },
         agent: {
             type: "object",
             description: "Agent identity (set by setup script)",
@@ -63,117 +31,17 @@ const configSchema = {
                 mxid: { type: "string" },
                 displayName: { type: "string" },
                 description: { type: "string" },
-                capabilities: { type: "array", items: { type: "string" } },
             },
             required: ["mxid", "displayName"],
         },
     },
     required: ["gatewayId", "gatewaySecret", "agent"],
 };
-// ── Helpers ──────────────────────────────────────────────────────────
-function generateVerificationHash(secret, agentMxid, gatewayId, enrolledAt) {
-    const message = `${agentMxid}|${gatewayId}|${enrolledAt}`;
-    return crypto.createHmac("sha256", secret).update(message).digest("hex");
-}
-/**
- * Enroll agent in the registry room via Matrix state event.
- */
-async function enrollInRegistry(api, config, matrixHomeserver, accessToken) {
-    const { agent, gatewayId, gatewaySecret, registryRoomId } = config;
-    if (!registryRoomId) {
-        api.logger.info("[krill-init] No registry room configured — skipping");
-        return false;
-    }
-    try {
-        // Join registry room
-        api.logger.info(`[krill-init] Joining registry room ${registryRoomId}...`);
-        await fetch(`${matrixHomeserver}/_matrix/client/v3/join/${encodeURIComponent(registryRoomId)}`, {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json",
-            },
-            body: "{}",
-        });
-        // Check if already enrolled
-        const stateRes = await fetch(`${matrixHomeserver}/_matrix/client/v3/rooms/${encodeURIComponent(registryRoomId)}/state/ai.krill.agent/${encodeURIComponent(agent.mxid)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-        if (stateRes.ok) {
-            const existing = (await stateRes.json());
-            if (existing.gateway_id === gatewayId) {
-                api.logger.info(`[krill-init] ✅ Already enrolled: ${agent.mxid}`);
-                return true;
-            }
-        }
-        // Publish enrollment state event
-        const enrolledAt = Math.floor(Date.now() / 1000);
-        const verificationHash = generateVerificationHash(gatewaySecret, agent.mxid, gatewayId, enrolledAt);
-        const stateContent = {
-            gateway_id: gatewayId,
-            display_name: agent.displayName,
-            description: agent.description || config.description || `${agent.displayName} - Krill Network Agent`,
-            capabilities: agent.capabilities || config.capabilities || ["chat"],
-            enrolled_at: enrolledAt,
-            verification_hash: verificationHash,
-        };
-        const enrollRes = await fetch(`${matrixHomeserver}/_matrix/client/v3/rooms/${encodeURIComponent(registryRoomId)}/state/ai.krill.agent/${encodeURIComponent(agent.mxid)}`, {
-            method: "PUT",
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify(stateContent),
-        });
-        if (enrollRes.ok) {
-            api.logger.info(`[krill-init] ✅ Enrolled in registry: ${agent.mxid}`);
-            return true;
-        }
-        else {
-            const error = await enrollRes.text();
-            api.logger.warn(`[krill-init] Registry enrollment failed: ${error}`);
-            return false;
-        }
-    }
-    catch (error) {
-        api.logger.warn(`[krill-init] Registry enrollment error: ${error.message}`);
-        return false;
-    }
-}
-/**
- * Register gateway with the Krill API.
- */
-async function registerGateway(api, config) {
-    const { gatewayId, gatewaySecret, krillApiUrl } = config;
-    if (!krillApiUrl)
-        return false;
-    try {
-        const res = await fetch(`${krillApiUrl}/v1/gateways/register`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "x-gateway-id": gatewayId,
-                "x-gateway-secret": gatewaySecret,
-            },
-            body: JSON.stringify({
-                serverIp: "0.0.0.0",
-                version: "1.0.0",
-                hostname: gatewayId,
-            }),
-        });
-        if (res.ok) {
-            api.logger.info(`[krill-init] ✅ Gateway registered: ${gatewayId}`);
-            return true;
-        }
-    }
-    catch (error) {
-        api.logger.warn(`[krill-init] Gateway registration failed: ${error.message}`);
-    }
-    return false;
-}
 // ── Plugin ───────────────────────────────────────────────────────────
 const plugin = {
     id: "krill-agent-init",
     name: "Krill Agent Init",
-    description: "Enrollment of agents to the Krill Network",
+    description: "Registers gateway with Krill API on startup via check-in",
     configSchema,
     register(api) {
         const config = api.config?.plugins?.entries?.["krill-agent-init"]?.config;
@@ -181,33 +49,140 @@ const plugin = {
             api.logger.warn("[krill-init] No config found — plugin disabled");
             return;
         }
-        // Validate required fields
-        const missing = [];
-        if (!config.gatewayId)
-            missing.push("gatewayId");
-        if (!config.gatewaySecret)
-            missing.push("gatewaySecret");
-        if (!config.agent?.mxid)
-            missing.push("agent.mxid");
-        if (!config.agent?.displayName)
-            missing.push("agent.displayName");
-        if (missing.length > 0) {
-            api.logger.warn(`[krill-init] ⚠️ Missing required config: ${missing.join(", ")} — skipping enrollment`);
+        if (!config.gatewayId || !config.gatewaySecret || !config.agent?.mxid) {
+            api.logger.warn("[krill-init] Missing required config — skipping");
             return;
         }
-        api.logger.info(`[krill-init] Initializing: "${config.agent.displayName}" (${config.agent.mxid})`);
-        const matrixConfig = api.config?.channels?.matrix;
-        // Schedule enrollment after Matrix connects
-        setTimeout(async () => {
-            // Register gateway with API (agent already in DB via /v1/provision/agent)
-            if (config.krillApiUrl) {
-                await registerGateway(api, config);
+        api.logger.info(`[krill-init] Agent: ${config.agent.displayName} (${config.agent.mxid})`);
+        if (!config.krillApiUrl) {
+            api.logger.warn("[krill-init] No krillApiUrl configured — skipping check-in");
+            return;
+        }
+        // Collect system info
+        // Detect OpenClaw version
+        let openclawVersion = "unknown";
+        try {
+            // Try api.version first, then check if it's the plugin version (1.0.0)
+            const v = api.version;
+            if (v && v !== "1.0.0") {
+                openclawVersion = v;
             }
             else {
-                api.logger.info("[krill-init] No krillApiUrl — skipping API registration");
+                // Try reading from openclaw's own package.json via process.argv
+                const { execSync } = require("child_process");
+                openclawVersion = execSync("openclaw --version 2>/dev/null", { encoding: "utf8" }).trim() || "unknown";
             }
-            api.logger.info("[krill-init] ✅ Init complete");
-        }, 10000);
+        }
+        catch { }
+        const systemInfo = {
+            os: `${os.platform()} ${os.release()}`,
+            arch: os.arch(),
+            hostname: os.hostname(),
+            node_version: process.version,
+            openclaw_version: openclawVersion,
+        };
+        // Collect loaded plugins
+        const plugins = [];
+        try {
+            const entries = api.config?.plugins?.entries;
+            if (entries && typeof entries === "object") {
+                for (const key of Object.keys(entries)) {
+                    if (key !== "krill-agent-init")
+                        plugins.push(key);
+                }
+            }
+        }
+        catch { }
+        // Detect model - try multiple sources
+        let model = "unknown";
+        try {
+            const cfg = api.config || {};
+            model =
+                cfg.models?.default ||
+                    cfg.defaultModel ||
+                    cfg.agents?.defaults?.model?.primary ||
+                    cfg.agents?.defaults?.model ||
+                    "unknown";
+            // If still unknown, try reading from config file directly
+            if (model === "unknown" || typeof model === "object") {
+                const fs = require("fs");
+                const path = require("path");
+                const homeDir = os.homedir();
+                const configPath = path.join(homeDir, ".openclaw", "openclaw.json");
+                if (fs.existsSync(configPath)) {
+                    const rawCfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+                    const m = rawCfg?.agents?.defaults?.model;
+                    if (typeof m === "string")
+                        model = m;
+                    else if (typeof m === "object" && m?.primary)
+                        model = m.primary;
+                }
+            }
+        }
+        catch { }
+        // Fire-and-forget check-in (register() must NOT be async)
+        setTimeout(() => {
+            doCheckin(api, config, systemInfo, plugins, model);
+        }, 5000);
     },
 };
+async function doCheckin(api, config, systemInfo, plugins, model) {
+    const checkinBody = {
+        gateway_id: config.gatewayId,
+        gateway_secret: config.gatewaySecret,
+        openclaw_version: systemInfo.openclaw_version,
+        os: systemInfo.os,
+        arch: systemInfo.arch,
+        hostname: systemInfo.hostname,
+        node_version: systemInfo.node_version,
+        plugins,
+        agent: {
+            mxid: config.agent.mxid,
+            display_name: config.agent.displayName,
+            description: config.agent.description || `${config.agent.displayName} - Krill Network Agent`,
+            model,
+            capabilities: ["chat"],
+        },
+    };
+    try {
+        const res = await fetch(`${config.krillApiUrl}/v1/gateways/checkin`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(checkinBody),
+        });
+        if (res.ok) {
+            api.logger.info(`[krill-init] ✅ Check-in OK: ${config.gatewayId} | ${systemInfo.os} ${systemInfo.arch} | OC ${systemInfo.openclaw_version}`);
+            return;
+        }
+        api.logger.warn(`[krill-init] Check-in failed (${res.status}), trying legacy register...`);
+    }
+    catch (error) {
+        api.logger.warn(`[krill-init] Check-in error: ${error.message}, trying legacy register...`);
+    }
+    // Fallback to legacy /register
+    try {
+        const res = await fetch(`${config.krillApiUrl}/v1/gateways/register`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-gateway-id": config.gatewayId,
+                "x-gateway-secret": config.gatewaySecret,
+            },
+            body: JSON.stringify({
+                serverIp: "0.0.0.0",
+                version: "1.0.0",
+                hostname: config.gatewayId,
+            }),
+        });
+        if (res.ok) {
+            api.logger.info(`[krill-init] ✅ Legacy register OK: ${config.gatewayId}`);
+        }
+        else {
+            api.logger.warn(`[krill-init] Legacy register failed: ${res.status}`);
+        }
+    }
+    catch (error) {
+        api.logger.warn(`[krill-init] Legacy register error: ${error.message}`);
+    }
+}
 export default plugin;
