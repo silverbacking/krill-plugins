@@ -21,8 +21,14 @@ const DEFAULT_CONFIG = {
     autoUpdate: true,
     checkIntervalMinutes: 60,
     // Config update defaults
-    configPath: join(homedir(), ".clawdbot", "clawdbot.yaml"),
-    restartCommand: "systemctl restart clawdbot-gateway",
+    configPath: existsSync(join(homedir(), ".openclaw", "openclaw.json"))
+        ? join(homedir(), ".openclaw", "openclaw.json")
+        : existsSync(join(homedir(), ".openclaw", "openclaw.yaml"))
+            ? join(homedir(), ".openclaw", "openclaw.yaml")
+            : join(homedir(), ".clawdbot", "clawdbot.yaml"),
+    restartCommand: existsSync("/usr/bin/openclaw") || existsSync("/usr/local/bin/openclaw")
+        ? "openclaw gateway restart"
+        : "systemctl restart clawdbot-gateway",
     healthCheckTimeoutSeconds: 30,
     allowedConfigSenders: [], // Empty = only admin users allowed
 };
@@ -439,7 +445,7 @@ const plugin = {
             },
         },
     },
-    async register(api) {
+    register(api) {
         pluginApi = api;
         // Load config
         const config = api.config?.plugins?.entries?.["krill-update"]?.config;
@@ -454,12 +460,19 @@ const plugin = {
         api.logger.info(`[krill-update] Check interval: ${pluginConfig.checkIntervalMinutes} min`);
         api.logger.info(`[krill-update] Config path: ${pluginConfig.configPath}`);
         // Register Matrix event handler for config updates
+        // Try multiple API styles for backwards compat (Clawdbot + OpenClaw)
         if (api.registerMatrixEventHandler) {
             api.registerMatrixEventHandler("ai.krill.config.update", handleConfigUpdate);
             api.logger.info(`[krill-update] 📡 Registered handler for ai.krill.config.update`);
         }
+        else if (api.on) {
+            api.on("matrix.event", (evt) => {
+                if (evt?.type === "ai.krill.config.update") handleConfigUpdate(evt);
+            });
+            api.logger.info(`[krill-update] 📡 Registered handler via api.on for ai.krill.config.update`);
+        }
         else {
-            api.logger.warn(`[krill-update] Matrix event handler registration not available`);
+            api.logger.info(`[krill-update] ℹ️ Matrix event handler not available (config updates via API polling only)`);
         }
         // Start periodic check
         if (pluginConfig.checkIntervalMinutes > 0) {
