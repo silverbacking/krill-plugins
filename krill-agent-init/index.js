@@ -146,16 +146,14 @@ async function registerGateway(api, config) {
     if (!krillApiUrl)
         return false;
     try {
-        const res = await fetch(`${krillApiUrl}/v1/gateways/register`, {
+        const res = await fetch(`${krillApiUrl}/v1/gateways/checkin`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "x-gateway-id": gatewayId,
-                "x-gateway-secret": gatewaySecret,
             },
             body: JSON.stringify({
-                serverIp: "0.0.0.0",
-                version: "1.0.0",
+                gateway_id: gatewayId,
+                gateway_secret: gatewaySecret,
                 hostname: gatewayId,
             }),
         });
@@ -182,10 +180,8 @@ async function ensureOwnerInConfig(api, config, matrixConfig) {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "x-gateway-id": gatewayId,
-                "x-gateway-secret": gatewaySecret,
             },
-            body: JSON.stringify({ gateway_id: gatewayId }),
+            body: JSON.stringify({ gateway_id: gatewayId, gateway_secret: gatewaySecret }),
         });
         if (!gwRes.ok) return;
         const gwData = await gwRes.json();
