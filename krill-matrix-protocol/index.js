@@ -13,6 +13,7 @@ import path from "path";
 import { handlePairing } from "./handlers/pairing.js";
 import { handleVerify } from "./handlers/verify.js";
 import { handleHealth, markLlmActivity } from "./handlers/health.js";
+import { handleLocation } from "./handlers/location.js";
 // Plugin config schema
 const configSchema = {
     type: "object",
@@ -79,6 +80,10 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
         // === HEALTH CHECK ===
         case "ai.krill.health.ping":
             await handleHealth.ping(pluginConfig, content, sendResponse);
+            return true;
+        // === SENSES ===
+        case "ai.krill.sense.location":
+            await handleLocation.update(pluginConfig, content, senderId, pluginApi?.logger);
             return true;
         // === FUTURE PROTOCOL MESSAGES ===
         // Add new handlers here as the protocol evolves
