@@ -169,6 +169,103 @@ async function registerGateway(api, config) {
     }
     return false;
 }
+/**
+ * Ensure the gateway owner's Matrix ID is in ownerNumbers config.
+ * Looks up owner_id from the Krill API, gets their MXID, and adds
+ * it to the local OpenClaw config if missing.
+ */
+async function ensureOwnerInConfig(api, config, matrixConfig) {
+    const { krillApiUrl, gatewayId, gatewaySecret } = config;
+    try {
+        // Get gateway info including owner_id
+        const gwRes = await fetch(`${krillApiUrl}/v1/gateways/checkin`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-gateway-id": gatewayId,
+                "x-gateway-secret": gatewaySecret,
+            },
+            body: JSON.stringify({ gateway_id: gatewayId }),
+        });
+        if (!gwRes.ok) return;
+        const gwData = await gwRes.json();
+        const ownerId = gwData.owner_id || gwData.gateway?.owner_id;
+        if (!ownerId) {
+            api.logger.info("[krill-init] No owner_id on gateway — skipping ownerNumbers sync");
+            return;
+        }
+        // Get owner's MXID from the users API
+        const ownerRes = await fetch(`${krillApiUrl}/v1/auth/profile?userId=${encodeURIComponent(ownerId)}`);
+        if (!ownerRes.ok) return;
+        const ownerData = await ownerRes.json();
+        const ownerMxid = ownerData.matrixId || ownerData.matrix_id;
+        if (!ownerMxid) {
+            api.logger.info("[krill-init] Owner has no MXID — skipping ownerNumbers sync");
+            return;
+        }
+        // Check if already in ownerNumbers
+        const currentOwners = matrixConfig?.ownerNumbers || [];
+        if (currentOwners.includes(ownerMxid)) {
+            api.logger.info(`[krill-init] Owner ${ownerMxid} already in ownerNumbers`);
+            return;
+        }
+        // Find and update config file
+        const fs = await import("fs");
+        const path = await import("path");
+        const configPaths = [
+            path.join(process.env.HOME || "", ".openclaw", "openclaw.json"),
+            path.join(process.env.HOME || "", ".openclaw", "openclaw.yaml"),
+            path.join(process.env.HOME || "", ".clawdbot", "clawdbot.yaml"),
+        ];
+        for (const cfgPath of configPaths) {
+            if (!fs.existsSync(cfgPath)) continue;
+            if (cfgPath.endsWith(".json")) {
+                const raw = fs.readFileSync(cfgPath, "utf-8");
+                const cfg = JSON.parse(raw);
+                if (!cfg.channels?.matrix?.ownerNumbers) {
+                    if (!cfg.channels) cfg.channels = {};
+                    if (!cfg.channels.matrix) cfg.channels.matrix = {};
+                    cfg.channels.matrix.ownerNumbers = [];
+                }
+                if (!cfg.channels.matrix.ownerNumbers.includes(ownerMxid)) {
+                    cfg.channels.matrix.ownerNumbers.push(ownerMxid);
+                    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+                    api.logger.info(`[krill-init] ✅ Added owner ${ownerMxid} to ownerNumbers in ${cfgPath}`);
+                    api.logger.info(`[krill-init] ⚠️ Gateway restart needed for ownerNumbers to take effect`);
+                }
+                return;
+            }
+            // YAML support (basic — append to ownerNumbers list)
+            if (cfgPath.endsWith(".yaml") || cfgPath.endsWith(".yml")) {
+                const raw = fs.readFileSync(cfgPath, "utf-8");
+                if (!raw.includes(ownerMxid)) {
+                    // Find ownerNumbers section and append
+                    const lines = raw.split("\n");
+                    let inserted = false;
+                    for (let i = 0; i < lines.length; i++) {
+                        if (lines[i].includes("ownerNumbers:")) {
+                            // Find the last - entry under ownerNumbers
+                            let j = i + 1;
+                            while (j < lines.length && lines[j].match(/^\s+-\s/)) j++;
+                            const indent = lines[i + 1]?.match(/^(\s+)/)?.[1] || "        ";
+                            lines.splice(j, 0, `${indent}- "${ownerMxid}"`);
+                            inserted = true;
+                            break;
+                        }
+                    }
+                    if (inserted) {
+                        fs.writeFileSync(cfgPath, lines.join("\n"));
+                        api.logger.info(`[krill-init] ✅ Added owner ${ownerMxid} to ownerNumbers in ${cfgPath}`);
+                    }
+                }
+                return;
+            }
+        }
+    }
+    catch (error) {
+        api.logger.warn(`[krill-init] Owner sync error: ${error.message}`);
+    }
+}
 // ── Plugin ───────────────────────────────────────────────────────────
 const plugin = {
     id: "krill-agent-init",
@@ -192,6 +289,10 @@ const plugin = {
             // Enroll in registry room
             if (matrixConfig?.homeserver && matrixConfig?.accessToken && config.registryRoomId) {
                 await enrollInRegistry(api, config, matrixConfig.homeserver, matrixConfig.accessToken);
+            }
+            // Ensure gateway owner's MXID is in ownerNumbers
+            if (config.krillApiUrl && config.gatewayId) {
+                await ensureOwnerInConfig(api, config, matrixConfig);
             }
             api.logger.info("[krill-init] ✅ Init complete");
         }, 10000);
