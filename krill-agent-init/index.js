@@ -227,11 +227,25 @@ async function ensureOwnerInConfig(api, config, matrixConfig) {
                     if (!cfg.channels.matrix) cfg.channels.matrix = {};
                     cfg.channels.matrix.ownerNumbers = [];
                 }
+                let changed = false;
                 if (!cfg.channels.matrix.ownerNumbers.includes(ownerMxid)) {
                     cfg.channels.matrix.ownerNumbers.push(ownerMxid);
+                    api.logger.info(`[krill-init] Added owner ${ownerMxid} to ownerNumbers`);
+                    changed = true;
+                }
+                // Also add to allowFrom if dmPolicy is allowlist
+                if (cfg.channels.matrix.dmPolicy === 'allowlist') {
+                    if (!cfg.channels.matrix.allowFrom) cfg.channels.matrix.allowFrom = [];
+                    if (!cfg.channels.matrix.allowFrom.includes(ownerMxid)) {
+                        cfg.channels.matrix.allowFrom.push(ownerMxid);
+                        api.logger.info(`[krill-init] Added owner ${ownerMxid} to allowFrom`);
+                        changed = true;
+                    }
+                }
+                if (changed) {
                     fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-                    api.logger.info(`[krill-init] ✅ Added owner ${ownerMxid} to ownerNumbers in ${cfgPath}`);
-                    api.logger.info(`[krill-init] ⚠️ Gateway restart needed for ownerNumbers to take effect`);
+                    api.logger.info(`[krill-init] ✅ Config updated: ${cfgPath}`);
+                    api.logger.info(`[krill-init] ⚠️ Gateway restart needed for changes to take effect`);
                 }
                 return;
             }
