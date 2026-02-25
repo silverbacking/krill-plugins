@@ -4,18 +4,22 @@
  * Auto-update system for Krill Network gateways.
  * Uses API polling only (scalable for high volume of agents).
  * 
- * NEW: Remote config updates via ai.krill.config.update Matrix messages
- * with automatic rollback if gateway fails to start.
+ * Features:
+ * - Periodic plugin update checks
+ * - Remote config updates via ai.krill.config.update Matrix messages
+ *   with automatic rollback if gateway fails to start
+ * - Heartbeat: POST /v1/agents/:id/heartbeat every 60s to report online status
  * 
- * Depends on: krill-agent-init (for gatewayId/gatewaySecret)
+ * Depends on: krill-agent-init (for gatewayId/gatewaySecret/agentId)
  */
 
 import { execSync, spawn } from "child_process";
 import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync } from "fs";
 import { createHash, createHmac } from "crypto";
 import { pipeline } from "stream/promises";
-import { homedir } from "os";
+import { homedir, loadavg } from "os";
 import { join } from "path";
+import { uptime as processUptime } from "process";
 import YAML from "js-yaml";
 
 // Type definition for Clawdbot Plugin API
@@ -55,6 +59,9 @@ interface UpdateConfig {
   apiUrl: string;
   autoUpdate: boolean;
   checkIntervalMinutes: number;
+  // Heartbeat settings
+  heartbeatIntervalSeconds: number;
+  heartbeatEnabled: boolean;
   // Config update settings
   configPath: string;
   restartCommand: string;
@@ -77,6 +84,9 @@ const DEFAULT_CONFIG: UpdateConfig = {
   apiUrl: "https://api.krillbot.network",
   autoUpdate: true,
   checkIntervalMinutes: 60,
+  // Heartbeat defaults
+  heartbeatIntervalSeconds: 60,
+  heartbeatEnabled: true,
   // Config update defaults
   configPath: existsSync(join(homedir(), ".openclaw", "openclaw.json"))
     ? join(homedir(), ".openclaw", "openclaw.json")
@@ -93,6 +103,8 @@ const DEFAULT_CONFIG: UpdateConfig = {
 let pluginConfig: UpdateConfig = DEFAULT_CONFIG;
 let pluginApi: ClawdbotPluginApi | null = null;
 let checkInterval: NodeJS.Timeout | null = null;
+let heartbeatInterval: NodeJS.Timeout | null = null;
+const gatewayStartTime = Date.now();
 
 // Track installed plugin versions
 const installedPlugins: Map<string, string> = new Map([
@@ -284,6 +296,87 @@ async function checkForUpdates(): Promise<void> {
     }
   } catch (error) {
     logger?.warn(`[krill-update] Check failed: ${error}`);
+  }
+}
+
+// ============================================================================
+// HEARTBEAT FUNCTIONALITY
+// ============================================================================
+
+/**
+ * Get agent ID from krill-agent-init config
+ */
+function getAgentId(): string | null {
+  const initConfig = (pluginApi as any)?.config?.plugins?.entries?.["krill-agent-init"]?.config;
+  return initConfig?.agent?.id || null;
+}
+
+/**
+ * Get OpenClaw version (best effort)
+ */
+function getOpenClawVersion(): string | null {
+  try {
+    const result = execSync("openclaw --version 2>/dev/null || echo unknown", {
+      stdio: "pipe",
+      timeout: 5000,
+    }).toString().trim();
+    return result !== "unknown" ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send heartbeat to Krill API
+ * POST /v1/agents/:agentId/heartbeat
+ */
+async function sendHeartbeat(): Promise<void> {
+  const logger = pluginApi?.logger;
+  const creds = getGatewayCredentials();
+  const agentId = getAgentId();
+
+  if (!creds || !agentId) {
+    // Silently skip — credentials not yet available (first boot)
+    return;
+  }
+
+  try {
+    const uptimeSeconds = Math.floor((Date.now() - gatewayStartTime) / 1000);
+    const load = loadavg()[0].toFixed(2);
+    const openclawVersion = getOpenClawVersion();
+
+    const body: Record<string, any> = {
+      gateway_secret: creds.gatewaySecret,
+      status: "online",
+      uptime_seconds: uptimeSeconds,
+      load,
+    };
+
+    if (openclawVersion) {
+      body.openclaw_version = openclawVersion;
+      body.version = openclawVersion;
+    }
+
+    const response = await fetch(
+      `${pluginConfig.apiUrl}/v1/agents/${agentId}/heartbeat`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+
+    if (!response.ok) {
+      const err = await response.text().catch(() => "");
+      logger?.warn(`[krill-heartbeat] Failed: ${response.status} ${err}`);
+    }
+    // Success is silent — no need to log every 60s
+  } catch (error: any) {
+    // Network errors are expected sometimes — only log occasionally
+    if (Math.random() < 0.1) {
+      logger?.warn(`[krill-heartbeat] Error: ${error.message || error}`);
+    }
   }
 }
 
@@ -546,6 +639,16 @@ const plugin = {
         description: "Minutes between update checks (0 to disable)",
         default: 60,
       },
+      heartbeatEnabled: {
+        type: "boolean",
+        description: "Enable heartbeat reporting to Krill API",
+        default: true,
+      },
+      heartbeatIntervalSeconds: {
+        type: "number",
+        description: "Seconds between heartbeat reports (min 30)",
+        default: 60,
+      },
       configPath: {
         type: "string",
         description: "Path to the gateway config file (clawdbot.yaml)",
@@ -589,6 +692,17 @@ const plugin = {
     api.logger.info(`[krill-update] Auto-update: ${pluginConfig.autoUpdate}`);
     api.logger.info(`[krill-update] Check interval: ${pluginConfig.checkIntervalMinutes} min`);
     api.logger.info(`[krill-update] Config path: ${pluginConfig.configPath}`);
+
+    // Start heartbeat timer
+    if (pluginConfig.heartbeatEnabled && pluginConfig.heartbeatIntervalSeconds > 0) {
+      const intervalMs = pluginConfig.heartbeatIntervalSeconds * 1000;
+      // First heartbeat after 10s (give time for init)
+      setTimeout(() => {
+        sendHeartbeat();
+        heartbeatInterval = setInterval(sendHeartbeat, intervalMs);
+      }, 10_000);
+      api.logger.info(`[krill-update] 💓 Heartbeat enabled (every ${pluginConfig.heartbeatIntervalSeconds}s)`);
+    }
 
     // Register Matrix event handler for config updates
     // Try multiple API styles for backwards compat (Clawdbot + OpenClaw)
@@ -660,6 +774,10 @@ const plugin = {
     if (checkInterval) {
       clearInterval(checkInterval);
       checkInterval = null;
+    }
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
     }
     pluginApi?.logger.info(`[krill-update] Plugin unloaded`);
   },

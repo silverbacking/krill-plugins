@@ -4,10 +4,13 @@
  * Auto-update system for Krill Network gateways.
  * Uses API polling only (scalable for high volume of agents).
  *
- * NEW: Remote config updates via ai.krill.config.update Matrix messages
- * with automatic rollback if gateway fails to start.
+ * Features:
+ * - Periodic plugin update checks
+ * - Remote config updates via ai.krill.config.update Matrix messages
+ *   with automatic rollback if gateway fails to start
+ * - Heartbeat: POST /v1/agents/:id/heartbeat every 60s to report online status
  *
- * Depends on: krill-agent-init (for gatewayId/gatewaySecret)
+ * Depends on: krill-agent-init (for gatewayId/gatewaySecret/agentId)
  */
 interface ClawdbotPluginApi {
     config?: any;
@@ -53,6 +56,16 @@ declare const plugin: {
                 description: string;
                 default: number;
             };
+            heartbeatEnabled: {
+                type: string;
+                description: string;
+                default: boolean;
+            };
+            heartbeatIntervalSeconds: {
+                type: string;
+                description: string;
+                default: number;
+            };
             configPath: {
                 type: string;
                 description: string;
@@ -78,7 +91,7 @@ declare const plugin: {
             };
         };
     };
-    register(api: ClawdbotPluginApi): Promise<void>;
+    register(api: ClawdbotPluginApi): void;
     unload(): void;
 };
 export default plugin;
