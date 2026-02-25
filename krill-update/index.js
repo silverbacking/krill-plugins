@@ -1,243 +1,629 @@
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
+/**
+ * Krill Update Plugin
+ *
+ * Auto-update system for Krill Network gateways.
+ * Uses API polling only (scalable for high volume of agents).
+ *
+ * Features:
+ * - Periodic plugin update checks
+ * - Remote config updates via ai.krill.config.update Matrix messages
+ *   with automatic rollback if gateway fails to start
+ * - Heartbeat: POST /v1/agents/:id/heartbeat every 60s to report online status
+ *
+ * Depends on: krill-agent-init (for gatewayId/gatewaySecret/agentId)
+ */
+import { execSync } from "child_process";
+import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync } from "fs";
+import { createHash, createHmac } from "crypto";
+import { pipeline } from "stream/promises";
+import { homedir, loadavg } from "os";
+import { join } from "path";
+import YAML from "js-yaml";
+const DEFAULT_CONFIG = {
+    apiUrl: "https://api.krillbot.network",
+    autoUpdate: true,
+    checkIntervalMinutes: 60,
+    // Heartbeat defaults
+    heartbeatIntervalSeconds: 60,
+    heartbeatEnabled: true,
+    // Config update defaults
+    configPath: existsSync(join(homedir(), ".openclaw", "openclaw.json"))
+        ? join(homedir(), ".openclaw", "openclaw.json")
+        : existsSync(join(homedir(), ".openclaw", "openclaw.yaml"))
+            ? join(homedir(), ".openclaw", "openclaw.yaml")
+            : join(homedir(), ".clawdbot", "clawdbot.yaml"),
+    restartCommand: existsSync("/usr/bin/openclaw") || existsSync("/usr/local/bin/openclaw")
+        ? "openclaw gateway restart"
+        : "systemctl restart clawdbot-gateway",
+    healthCheckTimeoutSeconds: 30,
+    allowedConfigSenders: [], // Empty = only admin users allowed
 };
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-
-// src/index.ts
-var index_exports = {};
-__export(index_exports, {
-  default: () => index_default
-});
-module.exports = __toCommonJS(index_exports);
-var import_child_process = require("child_process");
-var import_fs = require("fs");
-var import_crypto = require("crypto");
-var import_promises = require("stream/promises");
-var DEFAULT_CONFIG = {
-  apiUrl: "https://api.krillbot.network",
-  autoUpdate: true,
-  checkIntervalMinutes: 60
-};
-var pluginConfig = DEFAULT_CONFIG;
-var pluginApi = null;
-var checkInterval = null;
-var installedPlugins = /* @__PURE__ */ new Map([
-  ["krill-agent-init", "1.0.0"],
-  ["krill-matrix-protocol", "1.0.0"],
-  ["krill-update", "1.0.0"]
+let pluginConfig = DEFAULT_CONFIG;
+let pluginApi = null;
+let checkInterval = null;
+let heartbeatInterval = null;
+const gatewayStartTime = Date.now();
+// Track installed plugin versions
+const installedPlugins = new Map([
+    ["krill-agent-init", "1.0.0"],
+    ["krill-matrix-protocol", "1.0.0"],
+    ["krill-update", "1.0.0"],
 ]);
+/**
+ * Get gateway credentials from krill-agent-init config
+ */
 function getGatewayCredentials() {
-  const initConfig = pluginApi?.config?.plugins?.entries?.["krill-agent-init"]?.config;
-  if (!initConfig?.gatewayId || !initConfig?.gatewaySecret) {
-    return null;
-  }
-  return {
-    gatewayId: initConfig.gatewayId,
-    gatewaySecret: initConfig.gatewaySecret
-  };
+    const initConfig = pluginApi?.config?.plugins?.entries?.["krill-agent-init"]?.config;
+    if (!initConfig?.gatewayId || !initConfig?.gatewaySecret) {
+        return null;
+    }
+    return {
+        gatewayId: initConfig.gatewayId,
+        gatewaySecret: initConfig.gatewaySecret,
+    };
 }
-function generateAuthHeader(plugin2, version) {
-  const creds = getGatewayCredentials();
-  if (!creds) return null;
-  const timestamp = Math.floor(Date.now() / 1e3);
-  const message = `${creds.gatewayId}:${timestamp}:${plugin2}:${version}`;
-  const signature = (0, import_crypto.createHmac)("sha256", creds.gatewaySecret).update(message).digest("hex").substring(0, 32);
-  return `${creds.gatewayId}:${timestamp}:${signature}`;
+/**
+ * Generate auth header for API requests
+ */
+function generateAuthHeader(plugin, version) {
+    const creds = getGatewayCredentials();
+    if (!creds)
+        return null;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const message = `${creds.gatewayId}:${timestamp}:${plugin}:${version}`;
+    const signature = createHmac("sha256", creds.gatewaySecret)
+        .update(message)
+        .digest("hex")
+        .substring(0, 32);
+    return `${creds.gatewayId}:${timestamp}:${signature}`;
 }
+/**
+ * Verify file checksum
+ */
 function verifyChecksum(filePath, expectedChecksum) {
-  const parts = expectedChecksum.split(":");
-  const algo = parts.length === 2 ? parts[0] : "sha256";
-  const hash = parts.length === 2 ? parts[1] : parts[0];
-  if (algo !== "sha256") {
-    pluginApi?.logger.warn(`[krill-update] Unsupported checksum algorithm: ${algo}`);
-    return false;
-  }
-  const fileBuffer = (0, import_fs.readFileSync)(filePath);
-  const actualHash = (0, import_crypto.createHash)("sha256").update(fileBuffer).digest("hex");
-  return actualHash === hash;
+    const parts = expectedChecksum.split(":");
+    const algo = parts.length === 2 ? parts[0] : "sha256";
+    const hash = parts.length === 2 ? parts[1] : parts[0];
+    if (algo !== "sha256") {
+        pluginApi?.logger.warn(`[krill-update] Unsupported checksum algorithm: ${algo}`);
+        return false;
+    }
+    const fileBuffer = readFileSync(filePath);
+    const actualHash = createHash("sha256").update(fileBuffer).digest("hex");
+    return actualHash === hash;
 }
+/**
+ * Download and install a plugin update
+ */
 async function installUpdate(update) {
-  const logger = pluginApi?.logger;
-  logger?.info(`[krill-update] \u{1F4E6} Installing ${update.plugin} v${update.version}...`);
-  try {
-    const tempDir = "/tmp/krill-updates";
-    if (!(0, import_fs.existsSync)(tempDir)) {
-      (0, import_fs.mkdirSync)(tempDir, { recursive: true });
+    const logger = pluginApi?.logger;
+    logger?.info(`[krill-update] 📦 Installing ${update.plugin} v${update.version}...`);
+    try {
+        const tempDir = "/tmp/krill-updates";
+        if (!existsSync(tempDir)) {
+            mkdirSync(tempDir, { recursive: true });
+        }
+        const tempFile = `${tempDir}/${update.plugin}-${update.version}.tgz`;
+        // Generate auth header
+        const authHeader = generateAuthHeader(update.plugin, update.version);
+        if (!authHeader) {
+            throw new Error("Cannot generate auth - krill-agent-init not configured");
+        }
+        // Download with authentication
+        logger?.info(`[krill-update] Downloading from ${update.download_url}...`);
+        const response = await fetch(update.download_url, {
+            headers: { "X-Krill-Auth": authHeader },
+        });
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`Download failed: ${response.status} - ${error}`);
+        }
+        const fileStream = createWriteStream(tempFile);
+        await pipeline(response.body, fileStream);
+        // Verify checksum
+        logger?.info(`[krill-update] Verifying checksum...`);
+        if (!verifyChecksum(tempFile, update.checksum)) {
+            unlinkSync(tempFile);
+            throw new Error("Checksum verification failed!");
+        }
+        // Install via npm
+        logger?.info(`[krill-update] Installing via npm...`);
+        execSync(`npm install -g ${tempFile}`, { stdio: "pipe" });
+        // Cleanup
+        unlinkSync(tempFile);
+        // Update tracked version
+        installedPlugins.set(update.plugin, update.version);
+        logger?.info(`[krill-update] ✅ ${update.plugin} v${update.version} installed!`);
+        logger?.warn(`[krill-update] ⚠️ Gateway restart required to load new plugin version`);
+        return true;
     }
-    const tempFile = `${tempDir}/${update.plugin}-${update.version}.tgz`;
-    const authHeader = generateAuthHeader(update.plugin, update.version);
-    if (!authHeader) {
-      throw new Error("Cannot generate auth - krill-agent-init not configured");
+    catch (error) {
+        logger?.warn(`[krill-update] Installation failed: ${error}`);
+        return false;
     }
-    logger?.info(`[krill-update] Downloading from ${update.download_url}...`);
-    const response = await fetch(update.download_url, {
-      headers: { "X-Krill-Auth": authHeader }
-    });
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Download failed: ${response.status} - ${error}`);
-    }
-    const fileStream = (0, import_fs.createWriteStream)(tempFile);
-    await (0, import_promises.pipeline)(response.body, fileStream);
-    logger?.info(`[krill-update] Verifying checksum...`);
-    if (!verifyChecksum(tempFile, update.checksum)) {
-      (0, import_fs.unlinkSync)(tempFile);
-      throw new Error("Checksum verification failed!");
-    }
-    logger?.info(`[krill-update] Installing via npm...`);
-    (0, import_child_process.execSync)(`npm install -g ${tempFile}`, { stdio: "pipe" });
-    (0, import_fs.unlinkSync)(tempFile);
-    installedPlugins.set(update.plugin, update.version);
-    logger?.info(`[krill-update] \u2705 ${update.plugin} v${update.version} installed!`);
-    logger?.warn(`[krill-update] \u26A0\uFE0F Gateway restart required to load new plugin version`);
-    return true;
-  } catch (error) {
-    logger?.warn(`[krill-update] Installation failed: ${error}`);
-    return false;
-  }
 }
+/**
+ * Check for updates via API
+ */
 async function checkForUpdates() {
-  const logger = pluginApi?.logger;
-  logger?.info(`[krill-update] Checking for updates...`);
-  const creds = getGatewayCredentials();
-  if (!creds) {
-    logger?.warn(`[krill-update] Cannot check updates - krill-agent-init not configured`);
-    return;
-  }
-  try {
-    const installed = {};
-    for (const [name, version] of installedPlugins) {
-      installed[name] = version;
+    const logger = pluginApi?.logger;
+    logger?.info(`[krill-update] Checking for updates...`);
+    const creds = getGatewayCredentials();
+    if (!creds) {
+        logger?.warn(`[krill-update] Cannot check updates - krill-agent-init not configured`);
+        return;
     }
-    const timestamp = Math.floor(Date.now() / 1e3);
-    const message = `${creds.gatewayId}:${timestamp}:check`;
-    const signature = (0, import_crypto.createHmac)("sha256", creds.gatewaySecret).update(message).digest("hex").substring(0, 32);
-    const response = await fetch(`${pluginConfig.apiUrl}/v1/plugins/check-updates`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Krill-Auth": `${creds.gatewayId}:${timestamp}:${signature}`
-      },
-      body: JSON.stringify({
-        gateway_id: creds.gatewayId,
-        installed
-      })
-    });
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-    const data = await response.json();
-    const { updates, has_updates } = data;
-    if (!has_updates) {
-      logger?.info(`[krill-update] \u2705 All plugins up to date`);
-      return;
-    }
-    logger?.info(`[krill-update] \u{1F514} ${updates.length} update(s) available`);
-    for (const update of updates) {
-      logger?.info(
-        `[krill-update] Available: ${update.plugin} ${update.current} \u2192 ${update.latest}`
-      );
-      if (pluginConfig.autoUpdate || update.required) {
-        await installUpdate({
-          plugin: update.plugin,
-          version: update.latest,
-          download_url: update.download_url,
-          checksum: update.checksum,
-          required: update.required
+    try {
+        const installed = {};
+        for (const [name, version] of installedPlugins) {
+            installed[name] = version;
+        }
+        // Generate auth for check request
+        const timestamp = Math.floor(Date.now() / 1000);
+        const message = `${creds.gatewayId}:${timestamp}:check`;
+        const signature = createHmac("sha256", creds.gatewaySecret)
+            .update(message)
+            .digest("hex")
+            .substring(0, 32);
+        const response = await fetch(`${pluginConfig.apiUrl}/v1/plugins/check-updates`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Krill-Auth": `${creds.gatewayId}:${timestamp}:${signature}`,
+            },
+            body: JSON.stringify({
+                gateway_id: creds.gatewayId,
+                installed,
+            }),
         });
-      } else {
-        logger?.info(`[krill-update] Skipping (auto-update disabled)`);
-      }
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+        }
+        const data = await response.json();
+        const { updates, has_updates } = data;
+        if (!has_updates) {
+            logger?.info(`[krill-update] ✅ All plugins up to date`);
+            return;
+        }
+        logger?.info(`[krill-update] 🔔 ${updates.length} update(s) available`);
+        for (const update of updates) {
+            logger?.info(`[krill-update] Available: ${update.plugin} ${update.current} → ${update.latest}`);
+            if (pluginConfig.autoUpdate || update.required) {
+                await installUpdate({
+                    plugin: update.plugin,
+                    version: update.latest,
+                    download_url: update.download_url,
+                    checksum: update.checksum,
+                    required: update.required,
+                });
+            }
+            else {
+                logger?.info(`[krill-update] Skipping (auto-update disabled)`);
+            }
+        }
     }
-  } catch (error) {
-    logger?.warn(`[krill-update] Check failed: ${error}`);
-  }
+    catch (error) {
+        logger?.warn(`[krill-update] Check failed: ${error}`);
+    }
 }
-var plugin = {
-  id: "krill-update",
-  name: "Krill Update",
-  description: "Auto-update plugin for Krill Network gateways (API polling)",
-  configSchema: {
-    type: "object",
-    properties: {
-      apiUrl: {
-        type: "string",
-        description: "Krill API URL for update checks",
-        default: "https://api.krillbot.network"
-      },
-      autoUpdate: {
-        type: "boolean",
-        description: "Automatically install updates",
-        default: true
-      },
-      checkIntervalMinutes: {
-        type: "number",
-        description: "Minutes between update checks (0 to disable)",
-        default: 60
-      }
+// ============================================================================
+// HEARTBEAT FUNCTIONALITY
+// ============================================================================
+/**
+ * Get agent ID from krill-agent-init config
+ */
+function getAgentId() {
+    const initConfig = pluginApi?.config?.plugins?.entries?.["krill-agent-init"]?.config;
+    return initConfig?.agent?.id || null;
+}
+/**
+ * Get OpenClaw version (best effort)
+ */
+function getOpenClawVersion() {
+    try {
+        const result = execSync("openclaw --version 2>/dev/null || echo unknown", {
+            stdio: "pipe",
+            timeout: 5000,
+        }).toString().trim();
+        return result !== "unknown" ? result : null;
     }
-  },
-  async register(api) {
-    pluginApi = api;
-    const config = api.config?.plugins?.entries?.["krill-update"]?.config;
-    pluginConfig = { ...DEFAULT_CONFIG, ...config };
-    api.logger.info(`[krill-update] \u2705 Plugin loaded`);
-    api.logger.info(`[krill-update] API: ${pluginConfig.apiUrl}`);
-    api.logger.info(`[krill-update] Auto-update: ${pluginConfig.autoUpdate}`);
-    api.logger.info(`[krill-update] Check interval: ${pluginConfig.checkIntervalMinutes} min`);
-    if (pluginConfig.checkIntervalMinutes > 0) {
-      checkInterval = setInterval(
-        checkForUpdates,
-        pluginConfig.checkIntervalMinutes * 60 * 1e3
-      );
-      setTimeout(checkForUpdates, 6e4);
+    catch {
+        return null;
     }
-    api.registerCli?.(
-      ({ program }) => {
-        const update = program.command("krill-update").description("Krill plugin update commands");
-        update.command("check").description("Check for plugin updates now").action(async () => {
-          await checkForUpdates();
-        });
-        update.command("list").description("List installed Krill plugins").action(() => {
-          console.log("\n\u{1F990} Installed Krill plugins:");
-          for (const [name, version] of installedPlugins) {
-            console.log(`   ${name}: v${version}`);
-          }
-          console.log("");
-        });
-        update.command("status").description("Show update plugin status").action(() => {
-          console.log(`
-\u{1F504} Krill Update Plugin Status`);
-          console.log(`   API: ${pluginConfig.apiUrl}`);
-          console.log(`   Auto-update: ${pluginConfig.autoUpdate}`);
-          console.log(`   Check interval: ${pluginConfig.checkIntervalMinutes} min`);
-          console.log(`   Next check: ${checkInterval ? "scheduled" : "disabled"}`);
-          console.log(`   Installed plugins: ${installedPlugins.size}`);
-          console.log("");
-        });
-      },
-      { commands: ["krill-update"] }
-    );
-  },
-  unload() {
-    if (checkInterval) {
-      clearInterval(checkInterval);
-      checkInterval = null;
+}
+/**
+ * Send heartbeat to Krill API
+ * POST /v1/agents/:agentId/heartbeat
+ */
+async function sendHeartbeat() {
+    const logger = pluginApi?.logger;
+    const creds = getGatewayCredentials();
+    const agentId = getAgentId();
+    if (!creds || !agentId) {
+        // Silently skip — credentials not yet available (first boot)
+        return;
     }
-    pluginApi?.logger.info(`[krill-update] Plugin unloaded`);
-  }
+    try {
+        const uptimeSeconds = Math.floor((Date.now() - gatewayStartTime) / 1000);
+        const load = loadavg()[0].toFixed(2);
+        const openclawVersion = getOpenClawVersion();
+        const body = {
+            gateway_secret: creds.gatewaySecret,
+            status: "online",
+            uptime_seconds: uptimeSeconds,
+            load,
+        };
+        if (openclawVersion) {
+            body.openclaw_version = openclawVersion;
+            body.version = openclawVersion;
+        }
+        const response = await fetch(`${pluginConfig.apiUrl}/v1/agents/${agentId}/heartbeat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) {
+            const err = await response.text().catch(() => "");
+            logger?.warn(`[krill-heartbeat] Failed: ${response.status} ${err}`);
+        }
+        // Success is silent — no need to log every 60s
+    }
+    catch (error) {
+        // Network errors are expected sometimes — only log occasionally
+        if (Math.random() < 0.1) {
+            logger?.warn(`[krill-heartbeat] Error: ${error.message || error}`);
+        }
+    }
+}
+// ============================================================================
+// CONFIG UPDATE FUNCTIONALITY
+// ============================================================================
+/**
+ * Deep merge two objects (config_patch into base config)
+ */
+function deepMerge(target, source) {
+    const result = { ...target };
+    for (const key of Object.keys(source)) {
+        if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
+            result[key] = deepMerge(target[key] || {}, source[key]);
+        }
+        else {
+            result[key] = source[key];
+        }
+    }
+    return result;
+}
+/**
+ * Create backup of config file
+ */
+function backupConfig(configPath) {
+    const backupPath = `${configPath}.bak`;
+    if (existsSync(configPath)) {
+        copyFileSync(configPath, backupPath);
+        pluginApi?.logger.info(`[krill-update] 📦 Config backed up to ${backupPath}`);
+    }
+    return backupPath;
+}
+/**
+ * Restore config from backup
+ */
+function restoreConfig(configPath, backupPath) {
+    try {
+        if (existsSync(backupPath)) {
+            copyFileSync(backupPath, configPath);
+            pluginApi?.logger.info(`[krill-update] ⏪ Config restored from backup`);
+            return true;
+        }
+        return false;
+    }
+    catch (error) {
+        pluginApi?.logger.warn(`[krill-update] Failed to restore config: ${error}`);
+        return false;
+    }
+}
+/**
+ * Apply config patch to YAML file
+ */
+function applyConfigPatch(configPath, patch) {
+    try {
+        let currentConfig = {};
+        if (existsSync(configPath)) {
+            const content = readFileSync(configPath, "utf-8");
+            currentConfig = YAML.load(content) || {};
+        }
+        const newConfig = deepMerge(currentConfig, patch);
+        const yamlContent = YAML.dump(newConfig, { lineWidth: 120, noRefs: true });
+        writeFileSync(configPath, yamlContent, "utf-8");
+        pluginApi?.logger.info(`[krill-update] ✅ Config patch applied`);
+        return true;
+    }
+    catch (error) {
+        pluginApi?.logger.warn(`[krill-update] Failed to apply config patch: ${error}`);
+        return false;
+    }
+}
+/**
+ * Restart the gateway
+ */
+function restartGateway(command) {
+    try {
+        pluginApi?.logger.info(`[krill-update] 🔄 Restarting gateway: ${command}`);
+        execSync(command, { stdio: "pipe", timeout: 10000 });
+        return true;
+    }
+    catch (error) {
+        pluginApi?.logger.warn(`[krill-update] Restart command failed: ${error}`);
+        return false;
+    }
+}
+/**
+ * Check if gateway is healthy (responds to health check)
+ */
+async function checkGatewayHealth(timeoutSeconds) {
+    const logger = pluginApi?.logger;
+    const startTime = Date.now();
+    const timeoutMs = timeoutSeconds * 1000;
+    logger?.info(`[krill-update] ⏳ Waiting for gateway to become healthy (${timeoutSeconds}s timeout)...`);
+    // Wait a few seconds for the gateway to start
+    await new Promise((r) => setTimeout(r, 5000));
+    while (Date.now() - startTime < timeoutMs) {
+        try {
+            // Try to connect to the gateway's health endpoint or check process
+            const result = execSync("pgrep -f clawdbot", { stdio: "pipe" }).toString().trim();
+            if (result) {
+                // Process is running, wait a bit more to ensure it's stable
+                await new Promise((r) => setTimeout(r, 3000));
+                // Check again
+                const result2 = execSync("pgrep -f clawdbot", { stdio: "pipe" }).toString().trim();
+                if (result2) {
+                    logger?.info(`[krill-update] ✅ Gateway is healthy (PID: ${result2})`);
+                    return true;
+                }
+            }
+        }
+        catch (error) {
+            // Process not found, wait and retry
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+    }
+    logger?.warn(`[krill-update] ❌ Gateway health check timed out`);
+    return false;
+}
+/**
+ * Handle ai.krill.config.update Matrix event
+ */
+async function handleConfigUpdate(event) {
+    const logger = pluginApi?.logger;
+    const content = event.content;
+    const requestId = content.request_id || event.event_id;
+    logger?.info(`[krill-update] 📨 Received config update request from ${event.sender}`);
+    // Security check: verify sender is allowed
+    if (pluginConfig.allowedConfigSenders.length > 0) {
+        if (!pluginConfig.allowedConfigSenders.includes(event.sender)) {
+            logger?.warn(`[krill-update] ⛔ Sender ${event.sender} not in allowed list`);
+            await sendConfigUpdateResult(event.room_id, requestId, false, "Sender not authorized");
+            return true; // Event handled (rejected)
+        }
+    }
+    // Validate content
+    if (!content.config_patch || typeof content.config_patch !== "object") {
+        logger?.warn(`[krill-update] Invalid config_patch in message`);
+        await sendConfigUpdateResult(event.room_id, requestId, false, "Invalid config_patch");
+        return true;
+    }
+    const configPath = pluginConfig.configPath;
+    const backupPath = backupConfig(configPath);
+    // Apply the patch
+    const patchApplied = applyConfigPatch(configPath, content.config_patch);
+    if (!patchApplied) {
+        await sendConfigUpdateResult(event.room_id, requestId, false, "Failed to apply config patch");
+        return true;
+    }
+    // Restart if requested
+    if (content.restart !== false) {
+        const restarted = restartGateway(pluginConfig.restartCommand);
+        if (!restarted) {
+            // Restart command failed, restore backup
+            restoreConfig(configPath, backupPath);
+            await sendConfigUpdateResult(event.room_id, requestId, false, "Restart command failed, config restored");
+            return true;
+        }
+        // Wait and check health
+        const isHealthy = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
+        if (!isHealthy) {
+            // Gateway didn't come up, ROLLBACK
+            logger?.warn(`[krill-update] 🚨 Gateway unhealthy! Rolling back config...`);
+            restoreConfig(configPath, backupPath);
+            restartGateway(pluginConfig.restartCommand);
+            // Wait for recovery
+            const recovered = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
+            if (recovered) {
+                await sendConfigUpdateResult(event.room_id, requestId, false, "Gateway failed to start with new config. Rolled back successfully.");
+            }
+            else {
+                await sendConfigUpdateResult(event.room_id, requestId, false, "CRITICAL: Gateway failed and rollback may have failed. Manual intervention required!");
+            }
+            return true;
+        }
+    }
+    // Success!
+    logger?.info(`[krill-update] ✅ Config update successful!`);
+    await sendConfigUpdateResult(event.room_id, requestId, true, "Config updated successfully");
+    return true;
+}
+/**
+ * Send config update result back via Matrix
+ */
+async function sendConfigUpdateResult(roomId, requestId, success, message) {
+    const response = {
+        type: "ai.krill.config.update.result",
+        content: {
+            request_id: requestId,
+            success,
+            message,
+            timestamp: Math.floor(Date.now() / 1000),
+        },
+    };
+    try {
+        if (pluginApi?.sendMatrixMessage) {
+            await pluginApi.sendMatrixMessage(roomId, response);
+        }
+        else {
+            pluginApi?.logger.info(`[krill-update] Result: ${JSON.stringify(response)}`);
+        }
+    }
+    catch (error) {
+        pluginApi?.logger.warn(`[krill-update] Failed to send result: ${error}`);
+    }
+}
+// ============================================================================
+const plugin = {
+    id: "krill-update",
+    name: "Krill Update",
+    description: "Auto-update plugin for Krill Network gateways with remote config updates",
+    configSchema: {
+        type: "object",
+        properties: {
+            apiUrl: {
+                type: "string",
+                description: "Krill API URL for update checks",
+                default: "https://api.krillbot.network",
+            },
+            autoUpdate: {
+                type: "boolean",
+                description: "Automatically install updates",
+                default: true,
+            },
+            checkIntervalMinutes: {
+                type: "number",
+                description: "Minutes between update checks (0 to disable)",
+                default: 60,
+            },
+            heartbeatEnabled: {
+                type: "boolean",
+                description: "Enable heartbeat reporting to Krill API",
+                default: true,
+            },
+            heartbeatIntervalSeconds: {
+                type: "number",
+                description: "Seconds between heartbeat reports (min 30)",
+                default: 60,
+            },
+            configPath: {
+                type: "string",
+                description: "Path to the gateway config file (clawdbot.yaml)",
+                default: "~/.clawdbot/clawdbot.yaml",
+            },
+            restartCommand: {
+                type: "string",
+                description: "Command to restart the gateway after config changes",
+                default: "systemctl restart clawdbot-gateway",
+            },
+            healthCheckTimeoutSeconds: {
+                type: "number",
+                description: "Seconds to wait for gateway to become healthy after restart",
+                default: 30,
+            },
+            allowedConfigSenders: {
+                type: "array",
+                items: { type: "string" },
+                description: "Matrix user IDs allowed to send config updates (empty = admin only)",
+                default: [],
+            },
+        },
+    },
+    register(api) {
+        pluginApi = api;
+        // Load config
+        const config = api.config?.plugins?.entries?.["krill-update"]?.config;
+        pluginConfig = { ...DEFAULT_CONFIG, ...config };
+        // Expand ~ in configPath
+        if (pluginConfig.configPath.startsWith("~")) {
+            pluginConfig.configPath = pluginConfig.configPath.replace("~", homedir());
+        }
+        api.logger.info(`[krill-update] ✅ Plugin loaded`);
+        api.logger.info(`[krill-update] API: ${pluginConfig.apiUrl}`);
+        api.logger.info(`[krill-update] Auto-update: ${pluginConfig.autoUpdate}`);
+        api.logger.info(`[krill-update] Check interval: ${pluginConfig.checkIntervalMinutes} min`);
+        api.logger.info(`[krill-update] Config path: ${pluginConfig.configPath}`);
+        // Start heartbeat timer
+        if (pluginConfig.heartbeatEnabled && pluginConfig.heartbeatIntervalSeconds > 0) {
+            const intervalMs = pluginConfig.heartbeatIntervalSeconds * 1000;
+            // First heartbeat after 10s (give time for init)
+            setTimeout(() => {
+                sendHeartbeat();
+                heartbeatInterval = setInterval(sendHeartbeat, intervalMs);
+            }, 10_000);
+            api.logger.info(`[krill-update] 💓 Heartbeat enabled (every ${pluginConfig.heartbeatIntervalSeconds}s)`);
+        }
+        // Register Matrix event handler for config updates
+        // Try multiple API styles for backwards compat (Clawdbot + OpenClaw)
+        if (api.registerMatrixEventHandler) {
+            api.registerMatrixEventHandler("ai.krill.config.update", handleConfigUpdate);
+            api.logger.info(`[krill-update] 📡 Registered handler for ai.krill.config.update`);
+        }
+        else if (api.on) {
+            api.on("matrix.event", (evt) => {
+                if (evt?.type === "ai.krill.config.update")
+                    handleConfigUpdate(evt);
+            });
+            api.logger.info(`[krill-update] 📡 Registered handler via api.on for ai.krill.config.update`);
+        }
+        else {
+            api.logger.info(`[krill-update] ℹ️ Matrix event handler not available (config updates via API polling only)`);
+        }
+        // Start periodic check
+        if (pluginConfig.checkIntervalMinutes > 0) {
+            checkInterval = setInterval(checkForUpdates, pluginConfig.checkIntervalMinutes * 60 * 1000);
+            // Initial check after 60 seconds (give time for other plugins to load)
+            setTimeout(checkForUpdates, 60000);
+        }
+        // Register CLI commands
+        api.registerCli?.(({ program }) => {
+            const update = program
+                .command("krill-update")
+                .description("Krill plugin update commands");
+            update
+                .command("check")
+                .description("Check for plugin updates now")
+                .action(async () => {
+                await checkForUpdates();
+            });
+            update
+                .command("list")
+                .description("List installed Krill plugins")
+                .action(() => {
+                console.log("\n🦐 Installed Krill plugins:");
+                for (const [name, version] of installedPlugins) {
+                    console.log(`   ${name}: v${version}`);
+                }
+                console.log("");
+            });
+            update
+                .command("status")
+                .description("Show update plugin status")
+                .action(() => {
+                console.log(`\n🔄 Krill Update Plugin Status`);
+                console.log(`   API: ${pluginConfig.apiUrl}`);
+                console.log(`   Auto-update: ${pluginConfig.autoUpdate}`);
+                console.log(`   Check interval: ${pluginConfig.checkIntervalMinutes} min`);
+                console.log(`   Next check: ${checkInterval ? "scheduled" : "disabled"}`);
+                console.log(`   Installed plugins: ${installedPlugins.size}`);
+                console.log("");
+            });
+        }, { commands: ["krill-update"] });
+    },
+    unload() {
+        if (checkInterval) {
+            clearInterval(checkInterval);
+            checkInterval = null;
+        }
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+        }
+        pluginApi?.logger.info(`[krill-update] Plugin unloaded`);
+    },
 };
-var index_default = plugin;
+export default plugin;
