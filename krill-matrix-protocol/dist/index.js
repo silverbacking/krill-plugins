@@ -1,20 +1,24 @@
 /**
- * Krill Matrix Protocol Plugin
+ * Krill Matrix Protocol Plugin v1.2.0
  *
  * Universal interceptor for all ai.krill.* messages.
- * Handles: pairing, verification, health checks, and future protocol extensions.
+ * Uses MatrixClient.addPreprocessor() from @openclaw/matrix to intercept
+ * messages BEFORE they reach the LLM pipeline.
  *
- * This plugin intercepts Matrix messages BEFORE they reach the LLM,
- * responding automatically to protocol messages.
+ * Architecture:
+ *   1. registerService starts a background service
+ *   2. Service finds the active MatrixClient from @openclaw/matrix
+ *   3. Adds a preprocessor that detects ai.krill.* messages
+ *   4. Preprocessor handles the message and blanks it so @openclaw/matrix ignores it
  */
 import fs from "fs";
 import path from "path";
 // Import handlers
 import { handlePairing } from "./handlers/pairing.js";
 import { handleVerify } from "./handlers/verify.js";
-import { handleHealth, markLlmActivity } from "./handlers/health.js";
+import { handleHealth } from "./handlers/health.js";
 import { handleConfig, initConfigHandler } from "./handlers/config.js";
-import { handleAccess, initAccessHandler, markVerified } from "./handlers/access.js";
+import { initAccessHandler, markVerified } from "./handlers/access.js";
 import { handleAllowlist, initAllowlistHandler } from "./handlers/allowlist.js";
 import { handleSense } from "./handlers/senses/index.js";
 // Plugin config schema
@@ -86,14 +90,13 @@ const configSchema = {
             },
         },
     },
-    required: [], // gatewayId/gatewaySecret are auto-provisioned by krill-agent-init
+    required: [],
 };
 // Shared state
 let pluginConfig = null;
 let pluginApi = null;
 /**
  * Parse ai.krill message from text
- * Returns null if not a valid Krill message
  */
 function parseKrillMessage(text) {
     try {
@@ -113,68 +116,50 @@ function parseKrillMessage(text) {
 }
 /**
  * Validate Krill client authentication
- * Returns true if message comes from authenticated Krill App
  */
 function isAuthenticatedKrillClient(auth, config) {
     if (!auth)
         return false;
-    // Check for valid pairing token
     const token = auth.pairing_token;
     if (!token || typeof token !== "string")
         return false;
-    // Token format: krill_tk_v1_<base64>
     if (!token.startsWith("krill_tk_v1_"))
         return false;
-    // In production, validate token against stored pairings
-    // For now, accept any well-formed token
     return true;
 }
 /**
  * Check if message type requires authentication
- * Some messages (like initial pairing) don't need auth
  */
 function requiresAuth(messageType) {
-    // Pairing requests don't need auth (that's how you GET a token)
     if (messageType === "ai.krill.pair.request")
         return false;
-    // Health pings from monitors may have special auth
     if (messageType === "ai.krill.health.ping")
         return false;
-    // Everything else requires auth
     return true;
 }
 /**
- * Message interceptor - handles all ai.krill.* messages
- * Returns true if handled (intercept), false if message should pass to LLM
- *
- * TRANSPARENCY: Only responds to authenticated Krill clients.
- * Messages from Element/other clients are silently ignored.
+ * Handle a Krill protocol message.
+ * Returns true if handled (should be intercepted), false if it should pass through.
  */
 async function handleKrillMessage(message, senderId, roomId, sendResponse) {
     const { type, content, auth } = message;
-    pluginApi?.logger.info(`[krill-protocol] Received: ${type}`);
-    // Check if this message type requires authentication
+    pluginApi?.logger.info(`[krill-protocol] Received: ${type} from ${senderId}`);
     if (requiresAuth(type)) {
         if (!isAuthenticatedKrillClient(auth, pluginConfig)) {
-            // Not from Krill App - be transparent, don't respond
-            pluginApi?.logger.debug(`[krill-protocol] Ignoring unauthenticated message: ${type}`);
-            return true; // Intercept but don't respond (silent)
+            pluginApi?.logger.debug(`[krill-protocol] Ignoring unauthenticated: ${type}`);
+            return true; // Intercept silently
         }
     }
     switch (type) {
-        // === PAIRING ===
         case "ai.krill.pair.request":
             await handlePairing.request(pluginConfig, content, senderId, sendResponse);
             return true;
-        // === VERIFICATION ===
         case "ai.krill.verify.request":
             await handleVerify.request(pluginConfig, content, sendResponse);
             return true;
-        // === HEALTH CHECK ===
         case "ai.krill.health.ping":
             await handleHealth.ping(pluginConfig, content, sendResponse);
             return true;
-        // === CONFIG UPDATE ===
         case "ai.krill.config.update":
             await handleConfig({
                 sender: senderId,
@@ -183,12 +168,11 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
                 content,
             });
             return true;
-        // === ALLOWLIST MANAGEMENT ===
         case "ai.krill.allowlist":
             await handleAllowlist(content, senderId, sendResponse);
             return true;
         default:
-            // Check if it's a sense message (ai.krill.sense.*)
+            // Sense messages (ai.krill.sense.*)
             if (type.startsWith("ai.krill.sense.")) {
                 const sensesConfig = {
                     storagePath: pluginConfig?.senses?.storagePath
@@ -205,19 +189,150 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
                     config: sensesConfig,
                 });
             }
-            // Unknown ai.krill message - log but let it pass
-            pluginApi?.logger.warn(`[krill-protocol] Unknown message type: ${type}`);
-            return false;
+            // Senses control messages (ai.krill.senses.*)
+            if (type.startsWith("ai.krill.senses.")) {
+                pluginApi?.logger.info(`[krill-protocol] Senses control: ${type} (acknowledged)`);
+                return true; // Intercept — don't send to LLM
+            }
+            // Pairing sub-messages (challenge, confirm, complete, reject, revoke, revoked)
+            if (type.startsWith("ai.krill.pair.")) {
+                pluginApi?.logger.info(`[krill-protocol] Pairing sub-message: ${type} (acknowledged)`);
+                if (type === "ai.krill.pair.complete") {
+                    markVerified(senderId);
+                }
+                return true;
+            }
+            // Any other ai.krill.* message — intercept but log warning
+            pluginApi?.logger.warn(`[krill-protocol] Unknown ai.krill type: ${type}`);
+            return true; // Still intercept to prevent LLM seeing it
     }
+}
+/**
+ * Try to find the active MatrixClient from @openclaw/matrix plugin.
+ * Searches for the getAnyActiveMatrixClient function in the loaded modules.
+ */
+function findMatrixClient() {
+    try {
+        // The @openclaw/matrix plugin stores the client in a module-level Map.
+        // Since both plugins run in the same Node.js process, we can require it.
+        // Try multiple possible paths where @openclaw/matrix might be installed.
+        const possiblePaths = [
+            // System-wide OpenClaw (Linux packages, e.g., Kathy)
+            "/usr/lib/node_modules/openclaw/extensions/matrix/src/matrix/active-client.js",
+            // User-local OpenClaw (macOS, nvm, etc.)
+            path.join(process.env.HOME || "", "node/lib/node_modules/openclaw/extensions/matrix/src/matrix/active-client.js"),
+            // User extensions directory
+            path.join(process.env.HOME || "", ".openclaw/extensions/matrix/src/matrix/active-client.js"),
+            // npm global
+            path.join(process.env.HOME || "", "node/lib/node_modules/@openclaw/matrix/src/matrix/active-client.js"),
+        ];
+        for (const modulePath of possiblePaths) {
+            try {
+                if (fs.existsSync(modulePath)) {
+                    // Dynamic require — works because we're in the same process
+                    const activeClientModule = require(modulePath);
+                    const client = activeClientModule.getAnyActiveMatrixClient?.()
+                        || activeClientModule.getActiveMatrixClient?.();
+                    if (client) {
+                        return client;
+                    }
+                }
+            }
+            catch (e) {
+                // Try next path
+            }
+        }
+        // Fallback: search through require.cache for the active-client module
+        for (const key of Object.keys(require.cache)) {
+            if (key.includes("active-client") && key.includes("matrix")) {
+                const mod = require.cache[key];
+                const client = mod?.exports?.getAnyActiveMatrixClient?.()
+                    || mod?.exports?.getActiveMatrixClient?.();
+                if (client) {
+                    return client;
+                }
+            }
+        }
+    }
+    catch (e) {
+        pluginApi?.logger.debug(`[krill-protocol] Error finding MatrixClient: ${e}`);
+    }
+    return null;
+}
+/**
+ * Install the Krill preprocessor on the MatrixClient.
+ * The preprocessor intercepts ai.krill.* messages before they reach the LLM.
+ */
+function installPreprocessor(client) {
+    if (!client || typeof client.addPreprocessor !== "function") {
+        return false;
+    }
+    const krillPreprocessor = {
+        getSupportedEventTypes() {
+            // We want to see all room messages
+            return ["m.room.message"];
+        },
+        async processEvent(event, matrixClient) {
+            try {
+                const body = event?.content?.body;
+                if (!body || typeof body !== "string")
+                    return;
+                // Quick check before JSON parsing
+                if (!body.startsWith('{"type":"ai.krill.'))
+                    return;
+                const krillMsg = parseKrillMessage(body);
+                if (!krillMsg)
+                    return;
+                const senderId = event.sender || "";
+                const roomId = event.room_id || "";
+                pluginApi?.logger.info(`[krill-protocol] ⚡ Intercepted: ${krillMsg.type} in ${roomId}`);
+                // Create a response function that sends via the MatrixClient
+                const sendResponse = async (responseText) => {
+                    try {
+                        if (typeof matrixClient.sendText === "function") {
+                            await matrixClient.sendText(roomId, responseText);
+                        }
+                        else if (typeof matrixClient.sendMessage === "function") {
+                            await matrixClient.sendMessage(roomId, {
+                                msgtype: "m.text",
+                                body: responseText,
+                            });
+                        }
+                    }
+                    catch (err) {
+                        pluginApi?.logger.error(`[krill-protocol] Failed to send response: ${err}`);
+                    }
+                };
+                const handled = await handleKrillMessage(krillMsg, senderId, roomId, sendResponse);
+                if (handled) {
+                    // Blank the event so @openclaw/matrix handler ignores it.
+                    // The handler checks: if (!rawBody && !mediaUrl) return;
+                    // So setting body to empty string will make it skip.
+                    event.content.body = "";
+                    // Also remove formatted_body if present
+                    if (event.content.formatted_body) {
+                        event.content.formatted_body = "";
+                    }
+                    pluginApi?.logger.info(`[krill-protocol] ✅ Handled & blanked: ${krillMsg.type}`);
+                }
+            }
+            catch (err) {
+                pluginApi?.logger.error(`[krill-protocol] Preprocessor error: ${err}`);
+            }
+            // processEvent returns void — the event is modified in-place
+        },
+    };
+    client.addPreprocessor(krillPreprocessor);
+    pluginApi?.logger.info("[krill-protocol] ✅ Preprocessor installed on MatrixClient");
+    return true;
 }
 const plugin = {
     id: "krill-matrix-protocol",
     name: "Krill Matrix Protocol",
-    description: "Handles all ai.krill.* protocol messages (pairing, verify, health)",
+    description: "Handles all ai.krill.* protocol messages via MatrixClient preprocessor",
     configSchema,
     register(api) {
         pluginApi = api;
-        // Get plugin config
         const config = api.config?.plugins?.entries?.["krill-matrix-protocol"]?.config;
         if (!config) {
             api.logger.warn("[krill-protocol] No config found, plugin disabled");
@@ -225,7 +340,7 @@ const plugin = {
         }
         pluginConfig = config;
         api.logger.info(`[krill-protocol] Loaded for gateway: ${config.gatewayId}`);
-        // Initialize config handler
+        // Initialize handlers
         const configSettings = config.config || {};
         initConfigHandler({
             configPath: configSettings.configPath,
@@ -233,12 +348,10 @@ const plugin = {
             restartCommand: configSettings.restartCommand,
             healthCheckTimeoutSeconds: configSettings.healthCheckTimeoutSeconds,
             sendResponse: async (roomId, content) => {
-                // Use Matrix client to send response
                 api.logger.info(`[config] Response: ${JSON.stringify(content)}`);
             },
             logger: api.logger,
         });
-        // Initialize access handler (PIN verification)
         const accessSettings = config.access || {};
         if (accessSettings.enabled !== false) {
             initAccessHandler({
@@ -252,66 +365,64 @@ const plugin = {
                 logger: api.logger,
             });
         }
-        // Initialize allowlist handler (for hire/unhire)
         const allowlistSettings = config.allowlist || {};
         initAllowlistHandler({
             configPath: allowlistSettings.configPath,
             allowedSenders: allowlistSettings.allowedSenders || [],
             logger: api.logger,
         });
-        // Initialize storage
         if (config.storagePath) {
             const dir = path.dirname(config.storagePath);
             if (!fs.existsSync(dir)) {
                 fs.mkdirSync(dir, { recursive: true });
             }
         }
-        // Register message interceptor
-        // This intercepts messages BEFORE they reach the LLM
-        api.registerMessageInterceptor?.(async (ctx) => {
-            const text = ctx.message?.text || ctx.message?.body || "";
-            const senderId = ctx.senderId || "";
-            const krillMsg = parseKrillMessage(text);
-            // Handle Krill protocol messages (ai.krill.*)
-            if (krillMsg) {
-                const sendResponse = async (responseText) => {
-                    await ctx.reply?.(responseText);
-                };
-                const handled = await handleKrillMessage(krillMsg, senderId, ctx.roomId || "", sendResponse);
-                // If pairing completed, mark user as verified
-                if (krillMsg.type === "ai.krill.pair.complete") {
-                    markVerified(senderId);
-                }
-                return { handled };
-            }
-            // Not a Krill message - check if user needs PIN verification
-            // (Only for users on allowlist but not yet verified)
-            const accessSettings = pluginConfig?.access || {};
-            if (accessSettings.enabled !== false) {
-                const accessResult = await handleAccess(senderId, text);
-                if (!accessResult.allowed) {
-                    // User needs to verify PIN
-                    if (accessResult.response) {
-                        await ctx.reply?.(accessResult.response);
+        // Register a background service that installs the preprocessor
+        // once the MatrixClient is available
+        api.registerService({
+            id: "krill-protocol-interceptor",
+            start: async (ctx) => {
+                api.logger.info("[krill-protocol] 🔍 Starting interceptor service, looking for MatrixClient...");
+                let installed = false;
+                let attempts = 0;
+                const maxAttempts = 30; // Try for 30 seconds
+                const tryInstall = () => {
+                    attempts++;
+                    const client = findMatrixClient();
+                    if (client) {
+                        installed = installPreprocessor(client);
+                        if (installed) {
+                            api.logger.info(`[krill-protocol] 🎉 Interceptor active after ${attempts} attempt(s)`);
+                            return true;
+                        }
                     }
-                    return { handled: true }; // Don't pass to LLM
-                }
-            }
-            // User is verified or access control disabled - pass to LLM
-            markLlmActivity(); // Any non-protocol message = LLM is active
-            return { handled: false };
+                    return false;
+                };
+                // Try immediately
+                if (tryInstall())
+                    return;
+                // Retry with polling (MatrixClient may not be ready yet)
+                await new Promise((resolve) => {
+                    const interval = setInterval(() => {
+                        if (tryInstall() || attempts >= maxAttempts) {
+                            clearInterval(interval);
+                            if (!installed) {
+                                api.logger.error("[krill-protocol] ❌ Could not find MatrixClient after 30 attempts. Interceptor NOT active.");
+                            }
+                            resolve();
+                        }
+                    }, 1000);
+                });
+            },
         });
-        // Register HTTP endpoints for backwards compatibility
+        // Register HTTP handler (unchanged)
         api.registerHttpHandler(async (req, res) => {
             const url = new URL(req.url ?? "/", "http://localhost");
-            if (!url.pathname.startsWith("/krill/")) {
+            if (!url.pathname.startsWith("/krill/"))
                 return false;
-            }
-            // Handle HTTP endpoints (for non-Matrix clients)
-            // POST /krill/pair, /krill/verify, etc.
-            return false; // Not handled via HTTP for now
+            return false;
         });
-        api.logger.info("[krill-protocol] ✅ Protocol handler registered");
+        api.logger.info("[krill-protocol] ✅ Plugin registered (v1.2.0 — preprocessor mode)");
     },
 };
 export default plugin;
