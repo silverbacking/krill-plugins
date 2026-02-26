@@ -13,11 +13,11 @@
  * Depends on: krill-agent-init (for gatewayId/gatewaySecret/agentId)
  */
 import { execSync } from "child_process";
-import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync, readdirSync } from "fs";
+import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync } from "fs";
 import { createHash, createHmac } from "crypto";
 import { pipeline } from "stream/promises";
 import { homedir, loadavg } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
 import YAML from "js-yaml";
 const DEFAULT_CONFIG = {
     apiUrl: "https://api.krillbot.network",
@@ -130,6 +130,21 @@ async function installUpdate(update) {
             throw new Error("Checksum verification failed!");
         }
         // Install via npm
+        // For self-update: remove stale temp dirs that cause ENOTEMPTY errors
+        const globalNodeModules = execSync("npm root -g", { encoding: "utf-8" }).trim();
+        const pluginDir = join(globalNodeModules, update.plugin);
+        const stalePattern = `.${update.plugin}-`;
+        try {
+            const parentDir = dirname(pluginDir);
+            const entries = readdirSync(parentDir);
+            for (const entry of entries) {
+                if (entry.startsWith(stalePattern)) {
+                    logger?.info(`[krill-update] Cleaning stale dir: ${entry}`);
+                    rmSync(join(parentDir, entry), { recursive: true, force: true });
+                }
+            }
+        }
+        catch { /* ignore cleanup errors */ }
         logger?.info(`[krill-update] Installing via npm...`);
         execSync(`npm install -g ${tempFile}`, { stdio: "pipe" });
         // Cleanup
