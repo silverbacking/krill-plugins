@@ -111,6 +111,23 @@ declare const plugin: {
                     };
                 };
             };
+            allowlist: {
+                type: string;
+                description: string;
+                properties: {
+                    allowedSenders: {
+                        type: string;
+                        items: {
+                            type: string;
+                        };
+                        description: string;
+                    };
+                    configPath: {
+                        type: string;
+                        description: string;
+                    };
+                };
+            };
         };
         required: any[];
     };

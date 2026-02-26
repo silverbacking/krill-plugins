@@ -20,6 +20,8 @@ import { handleHealth, markLlmActivity } from "./handlers/health.js";
 import { handleConfig, initConfigHandler } from "./handlers/config.js";
 import { handleAccess, initAccessHandler, isVerified, markVerified } from "./handlers/access.js";
 import { handleAllowlist, initAllowlistHandler } from "./handlers/allowlist.js";
+import { handleSense } from "./handlers/senses/index.js";
+import type { SensesConfig } from "./handlers/senses/types.js";
 
 // Plugin config schema
 const configSchema = {
@@ -221,6 +223,24 @@ async function handleKrillMessage(
       return true;
     
     default:
+      // Check if it's a sense message (ai.krill.sense.*)
+      if (type.startsWith("ai.krill.sense.")) {
+        const sensesConfig: SensesConfig = {
+          storagePath: (pluginConfig as any)?.senses?.storagePath 
+            || path.join(process.env.HOME || "", "jarvisx", "state", "location"),
+          location: (pluginConfig as any)?.senses?.location,
+        };
+        return await handleSense({
+          type,
+          content,
+          senderId,
+          roomId,
+          reply: sendResponse,
+          logger: pluginApi!.logger,
+          config: sensesConfig,
+        });
+      }
+      
       // Unknown ai.krill message - log but let it pass
       pluginApi?.logger.warn(`[krill-protocol] Unknown message type: ${type}`);
       return false;

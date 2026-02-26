@@ -15,6 +15,8 @@ import { handleVerify } from "./handlers/verify.js";
 import { handleHealth, markLlmActivity } from "./handlers/health.js";
 import { handleConfig, initConfigHandler } from "./handlers/config.js";
 import { handleAccess, initAccessHandler, markVerified } from "./handlers/access.js";
+import { handleAllowlist, initAllowlistHandler } from "./handlers/allowlist.js";
+import { handleSense } from "./handlers/senses/index.js";
 // Plugin config schema
 const configSchema = {
     type: "object",
@@ -66,6 +68,21 @@ const configSchema = {
                 pinSuccessMessage: { type: "string" },
                 pinFailureMessage: { type: "string" },
                 pinBlockedMessage: { type: "string" },
+            },
+        },
+        allowlist: {
+            type: "object",
+            description: "Allowlist management settings (for hire/unhire)",
+            properties: {
+                allowedSenders: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "MXIDs allowed to modify allowlist (e.g., Krill API bot)",
+                },
+                configPath: {
+                    type: "string",
+                    description: "Path to openclaw.json (default: ~/.openclaw/openclaw.json)",
+                },
             },
         },
     },
@@ -166,7 +183,28 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
                 content,
             });
             return true;
+        // === ALLOWLIST MANAGEMENT ===
+        case "ai.krill.allowlist":
+            await handleAllowlist(content, senderId, sendResponse);
+            return true;
         default:
+            // Check if it's a sense message (ai.krill.sense.*)
+            if (type.startsWith("ai.krill.sense.")) {
+                const sensesConfig = {
+                    storagePath: pluginConfig?.senses?.storagePath
+                        || path.join(process.env.HOME || "", "jarvisx", "state", "location"),
+                    location: pluginConfig?.senses?.location,
+                };
+                return await handleSense({
+                    type,
+                    content,
+                    senderId,
+                    roomId,
+                    reply: sendResponse,
+                    logger: pluginApi.logger,
+                    config: sensesConfig,
+                });
+            }
             // Unknown ai.krill message - log but let it pass
             pluginApi?.logger.warn(`[krill-protocol] Unknown message type: ${type}`);
             return false;
@@ -214,6 +252,13 @@ const plugin = {
                 logger: api.logger,
             });
         }
+        // Initialize allowlist handler (for hire/unhire)
+        const allowlistSettings = config.allowlist || {};
+        initAllowlistHandler({
+            configPath: allowlistSettings.configPath,
+            allowedSenders: allowlistSettings.allowedSenders || [],
+            logger: api.logger,
+        });
         // Initialize storage
         if (config.storagePath) {
             const dir = path.dirname(config.storagePath);
