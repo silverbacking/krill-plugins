@@ -14,7 +14,7 @@
  */
 
 import { execSync, spawn } from "child_process";
-import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync } from "fs";
+import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync, readdirSync } from "fs";
 import { createHash, createHmac } from "crypto";
 import { pipeline } from "stream/promises";
 import { homedir, loadavg } from "os";
@@ -67,6 +67,8 @@ interface UpdateConfig {
   restartCommand: string;
   healthCheckTimeoutSeconds: number;
   allowedConfigSenders: string[];  // Matrix user IDs allowed to send config updates
+  // Skills settings
+  skillsPath: string;  // Where to install skills (default: ~/skills or workspace/skills)
 }
 
 interface PluginUpdate {
@@ -98,6 +100,7 @@ const DEFAULT_CONFIG: UpdateConfig = {
     : "systemctl restart clawdbot-gateway",
   healthCheckTimeoutSeconds: 30,
   allowedConfigSenders: [],  // Empty = only admin users allowed
+  skillsPath: "",  // Auto-detected from config or ~/skills
 };
 
 let pluginConfig: UpdateConfig = DEFAULT_CONFIG;
@@ -112,6 +115,9 @@ const installedPlugins: Map<string, string> = new Map([
   ["krill-matrix-protocol", "1.0.0"],
   ["krill-update", "1.0.0"],
 ]);
+
+// Track installed skill versions
+const installedSkills: Map<string, string> = new Map();
 
 /**
  * Get gateway credentials from krill-agent-init config
@@ -225,6 +231,131 @@ async function installUpdate(update: PluginUpdate): Promise<boolean> {
 }
 
 /**
+ * Scan installed skills to track versions
+ */
+function scanInstalledSkills(): void {
+  const skillsPath = getSkillsPath();
+  if (!skillsPath || !existsSync(skillsPath)) return;
+
+  installedSkills.clear();
+  try {
+    const dirs = readdirSync(skillsPath, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+
+    for (const dir of dirs) {
+      // Check for SKILL.md (required) and version.json (optional)
+      const skillMd = join(skillsPath, dir, "SKILL.md");
+      if (!existsSync(skillMd)) continue;
+
+      const versionFile = join(skillsPath, dir, "version.json");
+      let version = "0.0.0";
+      if (existsSync(versionFile)) {
+        try {
+          const meta = JSON.parse(readFileSync(versionFile, "utf-8"));
+          version = meta.version || "0.0.0";
+        } catch { /* ignore */ }
+      }
+      installedSkills.set(dir, version);
+    }
+  } catch { /* skills dir doesn't exist yet */ }
+}
+
+/**
+ * Get the skills installation path
+ */
+function getSkillsPath(): string {
+  if (pluginConfig.skillsPath) return pluginConfig.skillsPath;
+  
+  // Try to find workspace from config
+  const configContent = existsSync(pluginConfig.configPath)
+    ? readFileSync(pluginConfig.configPath, "utf-8")
+    : "";
+  
+  // Check for skills path in various config formats
+  const workspaceMatch = configContent.match(/workspace['":\s]+['"]?([^\s'"]+)/);
+  if (workspaceMatch) {
+    const wsPath = workspaceMatch[1].replace("~", homedir());
+    const skillsDir = join(wsPath, "skills");
+    if (existsSync(skillsDir)) return skillsDir;
+  }
+  
+  // Default: ~/skills
+  return join(homedir(), "skills");
+}
+
+/**
+ * Download and install a skill update
+ */
+async function installSkill(update: PluginUpdate): Promise<boolean> {
+  const logger = pluginApi?.logger;
+  const skillsPath = getSkillsPath();
+  
+  logger?.info(`[krill-update] 📦 Installing skill: ${update.plugin} v${update.version}...`);
+
+  try {
+    const tempDir = "/tmp/krill-updates";
+    if (!existsSync(tempDir)) {
+      mkdirSync(tempDir, { recursive: true });
+    }
+
+    const tempFile = `${tempDir}/${update.plugin}-${update.version}.tgz`;
+
+    // Generate auth header
+    const authHeader = generateAuthHeader(update.plugin, update.version);
+    if (!authHeader) {
+      throw new Error("Cannot generate auth - krill-agent-init not configured");
+    }
+
+    // Download
+    logger?.info(`[krill-update] Downloading skill from ${update.download_url}...`);
+    const response = await fetch(update.download_url, {
+      headers: { "X-Krill-Auth": authHeader },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Download failed: ${response.status} - ${error}`);
+    }
+
+    const fileStream = createWriteStream(tempFile);
+    await pipeline(response.body as any, fileStream);
+
+    // Verify checksum
+    if (!verifyChecksum(tempFile, update.checksum)) {
+      unlinkSync(tempFile);
+      throw new Error("Checksum verification failed!");
+    }
+
+    // Extract to skills directory
+    const skillDir = join(skillsPath, update.plugin);
+    if (!existsSync(skillDir)) {
+      mkdirSync(skillDir, { recursive: true });
+    }
+
+    // Extract .tgz (tar -xzf) into skill directory
+    execSync(`tar -xzf ${tempFile} -C ${skillDir} --strip-components=1`, { stdio: "pipe" });
+
+    // Write version.json for tracking
+    writeFileSync(
+      join(skillDir, "version.json"),
+      JSON.stringify({ version: update.version, installed_at: new Date().toISOString() }, null, 2)
+    );
+
+    // Cleanup
+    unlinkSync(tempFile);
+
+    installedSkills.set(update.plugin, update.version);
+    logger?.info(`[krill-update] ✅ Skill ${update.plugin} v${update.version} installed to ${skillDir}`);
+
+    return true;
+  } catch (error) {
+    logger?.warn(`[krill-update] Skill installation failed: ${error}`);
+    return false;
+  }
+}
+
+/**
  * Check for updates via API
  */
 async function checkForUpdates(): Promise<void> {
@@ -241,6 +372,13 @@ async function checkForUpdates(): Promise<void> {
     const installed: Record<string, string> = {};
     for (const [name, version] of installedPlugins) {
       installed[name] = version;
+    }
+
+    // Scan and include installed skills
+    scanInstalledSkills();
+    const installedSkillsObj: Record<string, string> = {};
+    for (const [name, version] of installedSkills) {
+      installedSkillsObj[name] = version;
     }
 
     // Generate auth for check request
@@ -260,6 +398,7 @@ async function checkForUpdates(): Promise<void> {
       body: JSON.stringify({
         gateway_id: creds.gatewayId,
         installed,
+        installed_skills: installedSkillsObj,
       }),
     });
 
@@ -268,30 +407,54 @@ async function checkForUpdates(): Promise<void> {
     }
 
     const data = await response.json();
-    const { updates, has_updates } = data;
+    const { updates, skill_updates, has_updates } = data;
 
     if (!has_updates) {
-      logger?.info(`[krill-update] ✅ All plugins up to date`);
+      logger?.info(`[krill-update] ✅ All plugins and skills up to date`);
       return;
     }
 
-    logger?.info(`[krill-update] 🔔 ${updates.length} update(s) available`);
+    // Process plugin updates
+    if (updates?.length > 0) {
+      logger?.info(`[krill-update] 🔔 ${updates.length} plugin update(s) available`);
 
-    for (const update of updates) {
-      logger?.info(
-        `[krill-update] Available: ${update.plugin} ${update.current} → ${update.latest}`
-      );
+      for (const update of updates) {
+        logger?.info(
+          `[krill-update] Available: ${update.plugin} ${update.current} → ${update.latest}`
+        );
 
-      if (pluginConfig.autoUpdate || update.required) {
-        await installUpdate({
-          plugin: update.plugin,
-          version: update.latest,
-          download_url: update.download_url,
-          checksum: update.checksum,
-          required: update.required,
-        } as PluginUpdate);
-      } else {
-        logger?.info(`[krill-update] Skipping (auto-update disabled)`);
+        if (pluginConfig.autoUpdate || update.required) {
+          await installUpdate({
+            plugin: update.plugin,
+            version: update.latest,
+            download_url: update.download_url,
+            checksum: update.checksum,
+            required: update.required,
+          } as PluginUpdate);
+        } else {
+          logger?.info(`[krill-update] Skipping (auto-update disabled)`);
+        }
+      }
+    }
+
+    // Process skill updates
+    if (skill_updates?.length > 0) {
+      logger?.info(`[krill-update] 🔔 ${skill_updates.length} skill update(s) available`);
+
+      for (const update of skill_updates) {
+        logger?.info(
+          `[krill-update] Skill available: ${update.plugin} ${update.current} → ${update.latest}`
+        );
+
+        if (pluginConfig.autoUpdate || update.required) {
+          await installSkill({
+            plugin: update.plugin,
+            version: update.latest,
+            download_url: update.download_url,
+            checksum: update.checksum,
+            required: update.required,
+          } as PluginUpdate);
+        }
       }
     }
   } catch (error) {
