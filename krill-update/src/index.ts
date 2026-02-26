@@ -210,25 +210,76 @@ async function installUpdate(update: PluginUpdate): Promise<boolean> {
       throw new Error("Checksum verification failed!");
     }
 
-    // Install via npm
-    // For self-update: remove stale temp dirs that cause ENOTEMPTY errors
-    const globalNodeModules = execSync("npm root -g", { encoding: "utf-8" }).trim();
-    const pluginDir = join(globalNodeModules, update.plugin);
-    const stalePattern = `.${update.plugin}-`;
-    try {
-      const parentDir = dirname(pluginDir);
-      const entries = readdirSync(parentDir);
-      for (const entry of entries) {
-        if (entry.startsWith(stalePattern)) {
-          logger?.info(`[krill-update] Cleaning stale dir: ${entry}`);
-          rmSync(join(parentDir, entry), { recursive: true, force: true });
+    // Find the extensions directory (where OpenClaw loads plugins from at runtime)
+    const extensionsDirs = [
+      join(homedir(), ".openclaw", "extensions"),
+      join(homedir(), ".clawdbot", "plugins"),
+    ];
+    const extensionsDir = extensionsDirs.find(d => existsSync(d));
+    const targetDir = extensionsDir ? join(extensionsDir, update.plugin) : null;
+    
+    if (targetDir && existsSync(targetDir)) {
+      // DIRECT EXTRACTION: Extract tgz key files directly to extensions dir
+      // This is more reliable than npm install -g because:
+      // 1. Avoids ENOTEMPTY errors (npm can't rename active directories)
+      // 2. Works for self-updates (krill-update updating itself)
+      // 3. Preserves existing node_modules in the extensions dir
+      logger?.info(`[krill-update] 📦 Direct extraction to ${targetDir}`);
+      
+      const extractDir = join(tempDir, `extract-${update.plugin}`);
+      mkdirSync(extractDir, { recursive: true });
+      execSync(`tar xzf ${tempFile} -C ${extractDir}`, { stdio: "pipe" });
+      
+      // Copy key files from package/ to extensions dir
+      const packageDir = join(extractDir, "package");
+      const filesToCopy = ["dist/index.js", "index.js", "package.json", 
+                           "clawdbot.plugin.json", "openclaw.plugin.json"];
+      for (const file of filesToCopy) {
+        const src = join(packageDir, file);
+        const dest = join(targetDir, file);
+        if (existsSync(src)) {
+          mkdirSync(dirname(dest), { recursive: true });
+          copyFileSync(src, dest);
         }
       }
-    } catch { /* ignore cleanup errors */ }
-    logger?.info(`[krill-update] Installing via npm...`);
-    execSync(`npm install -g ${tempFile}`, { stdio: "pipe" });
+      
+      // If the package has new dependencies (node_modules), install them
+      const newPkgJson = join(packageDir, "package.json");
+      if (existsSync(newPkgJson)) {
+        const pkg = JSON.parse(readFileSync(newPkgJson, "utf-8"));
+        if (pkg.dependencies && Object.keys(pkg.dependencies).length > 0) {
+          // Only run npm install if there are deps and no node_modules yet
+          if (!existsSync(join(targetDir, "node_modules"))) {
+            try {
+              logger?.info(`[krill-update] Installing dependencies for ${update.plugin}...`);
+              execSync(`cd ${targetDir} && npm install --production`, { stdio: "pipe" });
+            } catch (depErr) {
+              logger?.warn(`[krill-update] Dependency install failed (non-fatal): ${depErr}`);
+            }
+          }
+        }
+      }
+      
+      rmSync(extractDir, { recursive: true, force: true });
+    } else {
+      // FALLBACK: npm install -g (for first-time installs where extensions dir doesn't exist yet)
+      const globalNodeModules = execSync("npm root -g", { encoding: "utf-8" }).trim();
+      const stalePattern = `.${update.plugin}-`;
+      try {
+        const parentDir = dirname(join(globalNodeModules, update.plugin));
+        const entries = readdirSync(parentDir);
+        for (const entry of entries) {
+          if (entry.startsWith(stalePattern)) {
+            logger?.info(`[krill-update] Cleaning stale dir: ${entry}`);
+            rmSync(join(parentDir, entry), { recursive: true, force: true });
+          }
+        }
+      } catch { /* ignore cleanup errors */ }
+      logger?.info(`[krill-update] Installing via npm (first install)...`);
+      execSync(`npm install -g ${tempFile}`, { stdio: "pipe" });
+    }
 
-    // Cleanup
+    // Cleanup temp file
     unlinkSync(tempFile);
 
     // Update tracked version
