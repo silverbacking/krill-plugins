@@ -1,0 +1,31 @@
+{
+  "id": "krill-matrix-protocol",
+  "name": "Krill Matrix Protocol",
+  "version": "1.1.0",
+  "description": "Universal handler for all ai.krill.* protocol messages (pairing, verify, health, senses)",
+  "author": "Krill Network",
+  "main": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "gatewayId": {
+        "type": "string",
+        "description": "Unique identifier for this gateway"
+      },
+      "gatewaySecret": {
+        "type": "string",
+        "description": "Secret key for verification hashes"
+      },
+      "storagePath": {
+        "type": "string",
+        "description": "Path to store pairings data"
+      }
+    },
+    "required": ["gatewayId", "gatewaySecret"]
+  },
+  "uiHints": {
+    "gatewaySecret": { "sensitive": true }
+  },
+  "keywords": ["krill", "protocol", "pairing", "health", "senses", "matrix"],
+  "repository": "https://github.com/silverbacking/krill-plugins"
+}

@@ -1,0 +1,30 @@
+{
+  "id": "krill-update",
+  "name": "Krill Update",
+  "version": "1.4.2",
+  "description": "Auto-update plugin for Krill Network gateways with plugin, skill, and self-update support",
+  "author": "Krill Network",
+  "main": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "apiUrl": {
+        "type": "string",
+        "default": "https://api.krillbot.network",
+        "description": "Krill Network API URL"
+      },
+      "autoUpdate": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically install updates"
+      },
+      "checkIntervalMinutes": {
+        "type": "number",
+        "default": 60,
+        "description": "Minutes between update checks"
+      }
+    }
+  },
+  "keywords": ["krill", "update", "auto-update", "plugins", "skills"],
+  "repository": "https://github.com/silverbacking/krill-plugins"
+}
