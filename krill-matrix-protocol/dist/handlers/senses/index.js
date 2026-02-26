@@ -6,6 +6,7 @@
  * and only significant events (geofence enter/exit) notify the agent.
  */
 import { handleLocation } from "./location.js";
+import { handleAudio } from "./audio.js";
 /**
  * Route a sense message to the appropriate handler.
  * Returns true if handled.
@@ -16,9 +17,11 @@ export async function handleSense(ctx) {
         case "location":
             await handleLocation(ctx);
             return true;
+        case "audio":
+            await handleAudio(ctx);
+            return true;
         // Future senses:
         // case "camera":
-        // case "audio":
         // case "email":
         default:
             ctx.logger.warn(`[senses] Unknown sense type: ${senseType}`);

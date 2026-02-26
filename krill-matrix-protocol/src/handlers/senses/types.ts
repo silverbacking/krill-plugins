@@ -21,6 +21,39 @@ export interface SensesConfig {
   /** Base directory for sense data files (e.g., ~/jarvisx/state/location/) */
   storagePath: string;
   location?: LocationConfig;
+  audio?: AudioConfig;
+}
+
+export interface AudioConfig {
+  /** Context window in seconds to include when wake word fires (default: 60) */
+  contextWindowSeconds?: number;
+  /** Max transcript lines per daily file before rotation (default: 5000) */
+  maxDailyLines?: number;
+}
+
+export interface TranscriptChunk {
+  text: string;
+  language?: string;
+  startTime: string;
+  endTime: string;
+  confidence?: number;
+  isFinal: boolean;
+}
+
+export interface WakeWordEvent {
+  wakeWord: string;
+  query: string;
+  recentTranscript?: string;
+  contextWindowSeconds?: number;
+  timestamp: string;
+}
+
+export interface AudioSession {
+  active: boolean;
+  since?: string;
+  lastChunkAt?: string;
+  wakeWords?: string[];
+  language?: string;
 }
 
 export interface LocationConfig {
