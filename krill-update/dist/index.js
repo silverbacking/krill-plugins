@@ -295,9 +295,18 @@ function getSkillsPath() {
     if (workspaceMatch) {
         const wsPath = workspaceMatch[1].replace("~", homedir());
         const skillsDir = join(wsPath, "skills");
-        if (existsSync(skillsDir))
-            return skillsDir;
+        // Always use workspace/skills/ — create it if needed during install
+        return skillsDir;
     }
+    // Also try reading JSON config directly for workspace
+    try {
+        const config = JSON.parse(configContent);
+        const ws = config?.agents?.defaults?.workspace;
+        if (ws) {
+            return join(ws.replace("~", homedir()), "skills");
+        }
+    }
+    catch { /* not JSON */ }
     // Default: ~/skills
     return join(homedir(), "skills");
 }
