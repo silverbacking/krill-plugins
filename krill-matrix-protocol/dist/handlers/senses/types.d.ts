@@ -67,6 +67,7 @@ export interface LocationPoint {
 export interface CurrentLocation {
     current: LocationPoint;
     geofence?: string;
+    placeName?: string;
     updatedAt: string;
 }
 export interface Geofence {

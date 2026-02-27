@@ -12,7 +12,7 @@
  *
  * Depends on: krill-agent-init (for gatewayId/gatewaySecret/agentId)
  */
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync } from "fs";
 import { createHash, createHmac } from "crypto";
 import { pipeline } from "stream/promises";
@@ -44,12 +44,41 @@ let pluginApi = null;
 let checkInterval = null;
 let heartbeatInterval = null;
 const gatewayStartTime = Date.now();
-// Track installed plugin versions
-const installedPlugins = new Map([
-    ["krill-agent-init", "1.0.0"],
-    ["krill-matrix-protocol", "1.0.0"],
-    ["krill-update", "1.0.0"],
-]);
+// Track installed plugin versions (auto-detected from extensions dir on startup)
+const installedPlugins = new Map();
+/**
+ * Scan extensions directory to detect actually installed plugin versions.
+ * This replaces the hardcoded 1.0.0 defaults that caused unnecessary reinstalls.
+ */
+function scanInstalledPlugins() {
+    const extensionsDirs = [
+        join(homedir(), ".openclaw", "extensions"),
+        join(homedir(), ".clawdbot", "plugins"),
+    ];
+    for (const dir of extensionsDirs) {
+        if (!existsSync(dir))
+            continue;
+        try {
+            const entries = readdirSync(dir, { withFileTypes: true })
+                .filter(d => d.isDirectory())
+                .map(d => d.name);
+            for (const entry of entries) {
+                const pkgPath = join(dir, entry, "package.json");
+                if (existsSync(pkgPath)) {
+                    try {
+                        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+                        if (pkg.name && pkg.version) {
+                            installedPlugins.set(pkg.name, pkg.version);
+                        }
+                    }
+                    catch { /* skip malformed package.json */ }
+                }
+            }
+        }
+        catch { /* skip inaccessible dirs */ }
+    }
+    pluginApi?.logger.info(`[krill-update] Detected ${installedPlugins.size} installed plugin(s): ${[...installedPlugins.entries()].map(([n, v]) => `${n}@${v}`).join(", ")}`);
+}
 // Track installed skill versions
 const installedSkills = new Map();
 /**
@@ -158,42 +187,54 @@ async function installUpdate(update) {
                     copyFileSync(src, dest);
                 }
             }
-            // If the package has new dependencies (node_modules), install them
+            // If the package has new dependencies (node_modules), install them asynchronously
             const newPkgJson = join(packageDir, "package.json");
             if (existsSync(newPkgJson)) {
                 const pkg = JSON.parse(readFileSync(newPkgJson, "utf-8"));
                 if (pkg.dependencies && Object.keys(pkg.dependencies).length > 0) {
                     // Only run npm install if there are deps and no node_modules yet
                     if (!existsSync(join(targetDir, "node_modules"))) {
-                        try {
-                            logger?.info(`[krill-update] Installing dependencies for ${update.plugin}...`);
-                            execSync(`cd ${targetDir} && npm install --production`, { stdio: "pipe" });
-                        }
-                        catch (depErr) {
-                            logger?.warn(`[krill-update] Dependency install failed (non-fatal): ${depErr}`);
-                        }
+                        // Run npm install in background to avoid blocking Matrix sync
+                        logger?.info(`[krill-update] Installing dependencies for ${update.plugin} (background)...`);
+                        const child = spawn("npm", ["install", "--production"], {
+                            cwd: targetDir,
+                            stdio: "ignore",
+                            detached: true,
+                        });
+                        child.unref();
+                        child.on("exit", (code) => {
+                            if (code === 0) {
+                                logger?.info(`[krill-update] ✅ Dependencies installed for ${update.plugin}`);
+                            }
+                            else {
+                                logger?.warn(`[krill-update] Dependency install failed for ${update.plugin} (code ${code})`);
+                            }
+                        });
                     }
                 }
             }
             rmSync(extractDir, { recursive: true, force: true });
         }
         else {
-            // FALLBACK: npm install -g (for first-time installs where extensions dir doesn't exist yet)
-            const globalNodeModules = execSync("npm root -g", { encoding: "utf-8" }).trim();
-            const stalePattern = `.${update.plugin}-`;
-            try {
-                const parentDir = dirname(join(globalNodeModules, update.plugin));
-                const entries = readdirSync(parentDir);
-                for (const entry of entries) {
-                    if (entry.startsWith(stalePattern)) {
-                        logger?.info(`[krill-update] Cleaning stale dir: ${entry}`);
-                        rmSync(join(parentDir, entry), { recursive: true, force: true });
-                    }
-                }
+            // FALLBACK: Create extensions dir and extract directly (no npm install -g)
+            const extDir = join(homedir(), ".openclaw", "extensions", update.plugin);
+            mkdirSync(extDir, { recursive: true });
+            const extractDir = join(tempDir, `extract-${update.plugin}`);
+            mkdirSync(extractDir, { recursive: true });
+            execSync(`tar xzf ${tempFile} -C ${extractDir}`, { stdio: "pipe" });
+            const packageDir = join(extractDir, "package");
+            // Copy everything from package/ to extensions dir
+            if (existsSync(packageDir)) {
+                execSync(`cp -r ${packageDir}/* ${extDir}/`, { stdio: "pipe" });
             }
-            catch { /* ignore cleanup errors */ }
-            logger?.info(`[krill-update] Installing via npm (first install)...`);
-            execSync(`npm install -g ${tempFile}`, { stdio: "pipe" });
+            // Ensure index.js shim exists for OpenClaw plugin loading
+            const distIndex = join(extDir, "dist", "index.js");
+            const rootIndex = join(extDir, "index.js");
+            if (existsSync(distIndex) && !existsSync(rootIndex)) {
+                writeFileSync(rootIndex, `module.exports = require("./dist/index.js");\n`);
+            }
+            rmSync(extractDir, { recursive: true, force: true });
+            logger?.info(`[krill-update] 📦 First install: extracted to ${extDir}`);
         }
         // Cleanup temp file
         unlinkSync(tempFile);
@@ -740,6 +781,8 @@ const plugin = {
         if (pluginConfig.configPath.startsWith("~")) {
             pluginConfig.configPath = pluginConfig.configPath.replace("~", homedir());
         }
+        // Scan extensions dir to detect actual installed versions
+        scanInstalledPlugins();
         api.logger.info(`[krill-update] ✅ Plugin loaded`);
         api.logger.info(`[krill-update] API: ${pluginConfig.apiUrl}`);
         api.logger.info(`[krill-update] Auto-update: ${pluginConfig.autoUpdate}`);

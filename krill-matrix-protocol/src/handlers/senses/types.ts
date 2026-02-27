@@ -76,6 +76,7 @@ export interface LocationPoint {
 export interface CurrentLocation {
   current: LocationPoint;
   geofence?: string; // Name of current geofence, if any
+  placeName?: string; // Reverse-geocoded place name (e.g., "San Pedro Garza García, Nuevo León, México")
   updatedAt: string;
 }
 

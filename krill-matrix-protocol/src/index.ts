@@ -224,9 +224,12 @@ async function handleKrillMessage(
     default:
       // Sense messages (ai.krill.sense.*)
       if (type.startsWith("ai.krill.sense.")) {
+        // Resolve storage path: config > workspace/state/location > ~/.openclaw/krill/location
+        const workspace = pluginApi?.config?.agents?.defaults?.workspace
+          || path.join(process.env.HOME || "", ".openclaw", "krill");
         const sensesConfig: SensesConfig = {
           storagePath: (pluginConfig as any)?.senses?.storagePath 
-            || path.join(process.env.HOME || "", "jarvisx", "state", "location"),
+            || path.join(workspace, "state", "location"),
           location: (pluginConfig as any)?.senses?.location,
         };
         return await handleSense({

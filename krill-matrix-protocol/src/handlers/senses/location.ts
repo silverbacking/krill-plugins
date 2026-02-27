@@ -25,6 +25,76 @@ import type {
 } from "./types.js";
 
 const DEFAULT_THRESHOLD_METERS = 50;
+const GEOCODE_CACHE_MAX = 500;
+const NOMINATIM_USER_AGENT = "KrillBot/1.0 (krill-matrix-protocol)";
+
+/**
+ * Reverse geocode coordinates to a place name using Nominatim (OpenStreetMap).
+ * Uses local cache to avoid repeated lookups for nearby locations.
+ * Returns null on failure (non-blocking, best-effort).
+ */
+async function reverseGeocode(
+  lat: number, lon: number, storagePath: string, logger: any
+): Promise<string | null> {
+  // Round to ~100m precision for cache key (3 decimal places)
+  const cacheKey = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  
+  // Check cache
+  const cachePath = path.join(storagePath, "geocache.json");
+  const cache = readJson<Record<string, { name: string; ts: number }>>(cachePath, {});
+  if (cache[cacheKey]) {
+    return cache[cacheKey].name;
+  }
+  
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=16&addressdetails=1`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    
+    const response = await fetch(url, {
+      headers: { "User-Agent": NOMINATIM_USER_AGENT },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    
+    if (!response.ok) return null;
+    
+    const data = await response.json() as any;
+    const addr = data.address || {};
+    
+    // Build a human-readable name: neighborhood/suburb, city, country
+    const parts: string[] = [];
+    const local = addr.neighbourhood || addr.suburb || addr.quarter || addr.hamlet || addr.village || "";
+    const city = addr.city || addr.town || addr.municipality || "";
+    const state = addr.state || "";
+    const country = addr.country || "";
+    
+    if (local) parts.push(local);
+    if (city && city !== local) parts.push(city);
+    if (state && state !== city) parts.push(state);
+    if (country) parts.push(country);
+    
+    const placeName = parts.join(", ") || data.display_name || null;
+    
+    if (placeName) {
+      // Save to cache (trim if too large)
+      cache[cacheKey] = { name: placeName, ts: Date.now() };
+      if (Object.keys(cache).length > GEOCODE_CACHE_MAX) {
+        // Remove oldest entries
+        const entries = Object.entries(cache).sort((a, b) => a[1].ts - b[1].ts);
+        const toRemove = entries.slice(0, entries.length - GEOCODE_CACHE_MAX + 100);
+        for (const [k] of toRemove) delete cache[k];
+      }
+      writeJson(cachePath, cache);
+      logger.info(`[senses/location] 📍 Geocoded: ${placeName}`);
+    }
+    
+    return placeName;
+  } catch (err: any) {
+    logger.debug(`[senses/location] Geocode failed (non-fatal): ${err.message || err}`);
+    return null;
+  }
+}
 
 /**
  * Haversine distance between two points in meters
@@ -126,11 +196,15 @@ export async function handleLocation(ctx: SenseContext): Promise<void> {
   
   // === Significant movement: update everything ===
   
-  // 1. Update current.json
+  // 1. Reverse geocode (async, best-effort)
+  const placeName = await reverseGeocode(point.latitude, point.longitude, storagePath, logger);
+  
+  // 2. Update current.json
   const geofenceName = getCurrentGeofence(point, storagePath);
   const newCurrent: CurrentLocation = {
     current: point,
     geofence: geofenceName || undefined,
+    placeName: placeName || undefined,
     updatedAt: new Date().toISOString(),
   };
   writeJson(currentPath, newCurrent);
