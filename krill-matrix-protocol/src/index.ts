@@ -171,6 +171,10 @@ function isAuthenticatedKrillClient(auth: any, config: KrillProtocolConfig): boo
 function requiresAuth(messageType: string): boolean {
   if (messageType === "ai.krill.pair.request") return false;
   if (messageType === "ai.krill.health.ping") return false;
+  // Sense data from the user's phone doesn't carry auth tokens —
+  // it's sent by the Krill app directly, not via the pairing protocol.
+  // We trust it based on sender (owner) rather than pairing token.
+  if (messageType.startsWith("ai.krill.sense.")) return false;
   return true;
 }
 
