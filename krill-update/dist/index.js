@@ -17,7 +17,7 @@ import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, wri
 import { createHash, createHmac } from "crypto";
 import { pipeline } from "stream/promises";
 import { homedir, loadavg } from "os";
-import { join, dirname } from "path";
+import { join } from "path";
 import YAML from "js-yaml";
 const DEFAULT_CONFIG = {
     apiUrl: "https://api.krillbot.network",
@@ -175,16 +175,31 @@ async function installUpdate(update) {
             const extractDir = join(tempDir, `extract-${update.plugin}`);
             mkdirSync(extractDir, { recursive: true });
             execSync(`tar xzf ${tempFile} -C ${extractDir}`, { stdio: "pipe" });
-            // Copy key files from package/ to extensions dir
+            // Clean target directory (preserve node_modules) then copy everything from package
             const packageDir = join(extractDir, "package");
-            const filesToCopy = ["dist/index.js", "index.js", "package.json",
-                "clawdbot.plugin.json", "openclaw.plugin.json"];
-            for (const file of filesToCopy) {
-                const src = join(packageDir, file);
-                const dest = join(targetDir, file);
-                if (existsSync(src)) {
-                    mkdirSync(dirname(dest), { recursive: true });
-                    copyFileSync(src, dest);
+            if (existsSync(packageDir)) {
+                // Remove old files except node_modules
+                const existing = readdirSync(targetDir);
+                for (const entry of existing) {
+                    if (entry === "node_modules")
+                        continue;
+                    rmSync(join(targetDir, entry), { recursive: true, force: true });
+                }
+                // Copy all files from extracted package
+                const copyRecursive = (src, dest) => {
+                    const stat = require("fs").statSync(src);
+                    if (stat.isDirectory()) {
+                        mkdirSync(dest, { recursive: true });
+                        for (const child of readdirSync(src)) {
+                            copyRecursive(join(src, child), join(dest, child));
+                        }
+                    }
+                    else {
+                        copyFileSync(src, dest);
+                    }
+                };
+                for (const entry of readdirSync(packageDir)) {
+                    copyRecursive(join(packageDir, entry), join(targetDir, entry));
                 }
             }
             // If the package has new dependencies (node_modules), install them asynchronously
