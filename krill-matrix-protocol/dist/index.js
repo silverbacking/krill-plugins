@@ -182,10 +182,16 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
                 // Resolve storage path: config > workspace/state/location > ~/.openclaw/krill/location
                 const workspace = pluginApi?.config?.agents?.defaults?.workspace
                     || path.join(process.env.HOME || "", ".openclaw", "krill");
+                // Extract Matrix credentials for media download (camera sense needs them)
+                const mc = findMatrixClient();
+                const hsUrl = mc?.baseUrl || mc?.homeserverUrl || "";
+                const token = mc?.accessToken || "";
                 const sensesConfig = {
                     storagePath: pluginConfig?.senses?.storagePath
                         || path.join(workspace, "state", "location"),
                     location: pluginConfig?.senses?.location,
+                    homeserverUrl: hsUrl,
+                    accessToken: token,
                 };
                 return await handleSense({
                     type,

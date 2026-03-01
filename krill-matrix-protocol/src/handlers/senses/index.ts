@@ -9,6 +9,7 @@
 import type { SenseContext } from "./types.js";
 import { handleLocation } from "./location.js";
 import { handleAudio } from "./audio.js";
+import { handleCamera } from "./camera.js";
 
 /**
  * Route a sense message to the appropriate handler.
@@ -26,8 +27,11 @@ export async function handleSense(ctx: SenseContext): Promise<boolean> {
       await handleAudio(ctx);
       return true;
 
+    case "camera":
+      await handleCamera(ctx);
+      return true;
+
     // Future senses:
-    // case "camera":
     // case "email":
     
     default:

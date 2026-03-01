@@ -22,6 +22,10 @@ export interface SensesConfig {
   storagePath: string;
   location?: LocationConfig;
   audio?: AudioConfig;
+  /** Matrix homeserver URL for media downloads (e.g., https://matrix.krillbot.network) */
+  homeserverUrl?: string;
+  /** Matrix access token for authenticated media downloads */
+  accessToken?: string;
 }
 
 export interface AudioConfig {
