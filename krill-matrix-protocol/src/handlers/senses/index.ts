@@ -32,6 +32,11 @@ export async function handleSense(ctx: SenseContext): Promise<boolean> {
       await handleCamera(ctx);
       return true;
 
+    case "camera.end":
+      // End-of-sequence — just log it, no action needed (agent gets notified by plugin)
+      ctx.logger.info(`[senses] Camera session ended: ${JSON.stringify(ctx.content)}`);
+      return true;
+
     case "microphone":
       await handleMicrophone(ctx);
       return true;

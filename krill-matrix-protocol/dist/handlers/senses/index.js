@@ -28,6 +28,10 @@ async function handleSense(ctx) {
         case "camera":
             await (0, camera_js_1.handleCamera)(ctx);
             return true;
+        case "camera.end":
+            // End-of-sequence — just log it, no action needed (agent gets notified by plugin)
+            ctx.logger.info(`[senses] Camera session ended: ${JSON.stringify(ctx.content)}`);
+            return true;
         case "microphone":
             await (0, microphone_js_1.handleMicrophone)(ctx);
             return true;
