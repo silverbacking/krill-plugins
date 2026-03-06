@@ -135,24 +135,7 @@ export interface KrillProtocolConfig {
 let pluginConfig: KrillProtocolConfig | null = null;
 let pluginApi: OpenClawPluginApi | null = null;
 
-/**
- * Parse ai.krill message from text
- */
-function parseKrillMessage(text: string): { type: string; content: any; auth?: any } | null {
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed.type?.startsWith("ai.krill.")) {
-      return {
-        type: parsed.type,
-        content: parsed.content,
-        auth: parsed["ai.krill.auth"],
-      };
-    }
-  } catch {
-    // Not JSON or not a Krill message
-  }
-  return null;
-}
+// No legacy JSON parsing — all krill messages use native msgtype
 
 /**
  * Validate Krill client authentication
@@ -349,25 +332,13 @@ function installPreprocessor(client: any): boolean {
         if (!content) return;
 
         const msgtype = content.msgtype;
-        let krillMsg: { type: string; content: any; auth?: any } | null = null;
+        if (typeof msgtype !== "string" || !msgtype.startsWith("ai.krill.")) return;
 
-        // Route 1: msgtype is ai.krill.* (native krill events — camera, microphone, etc.)
-        if (typeof msgtype === "string" && msgtype.startsWith("ai.krill.")) {
-          krillMsg = {
-            type: msgtype,
-            content: content["ai.krill.sense"] || content,
-            auth: content["ai.krill.auth"],
-          };
-        }
-        // Route 2: JSON-encoded krill message in body (legacy protocol messages)
-        else {
-          const body = content.body;
-          if (!body || typeof body !== "string") return;
-          if (!body.startsWith('{"type":"ai.krill.')) return;
-          krillMsg = parseKrillMessage(body);
-        }
-
-        if (!krillMsg) return;
+        const krillMsg = {
+          type: msgtype,
+          content: content["ai.krill.sense"] || content,
+          auth: content["ai.krill.auth"],
+        };
 
         const senderId = event.sender || "";
         const roomId = event.room_id || "";
