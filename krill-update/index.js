@@ -93,17 +93,86 @@ function verifyChecksum(filePath, expectedChecksum) {
     return actualHash === hash;
 }
 /**
- * Download and install a plugin update
+ * Backup the currently installed version of a plugin before upgrading.
+ * Returns the path to the backup .tgz, or null if backup failed.
+ */
+function backupPlugin(pluginName, backupDir) {
+    const logger = pluginApi?.logger;
+    try {
+        if (!existsSync(backupDir)) {
+            mkdirSync(backupDir, { recursive: true });
+        }
+        // Find where the plugin is installed globally
+        const globalRoot = execSync("npm root -g", { stdio: "pipe" }).toString().trim();
+        const pluginDir = `${globalRoot}/${pluginName}`;
+        if (!existsSync(pluginDir)) {
+            logger?.info(`[krill-update] No existing install of ${pluginName} to backup`);
+            return null;
+        }
+        // npm pack the installed plugin to get a .tgz
+        const packOutput = execSync(`npm pack ${pluginDir}`, {
+            stdio: "pipe",
+            cwd: backupDir,
+        }).toString().trim();
+        // npm pack outputs the filename on the last line
+        const tgzName = packOutput.split("\n").pop().trim();
+        const backupPath = `${backupDir}/${tgzName}`;
+        if (existsSync(backupPath)) {
+            logger?.info(`[krill-update] 💾 Backed up ${pluginName} → ${backupPath}`);
+            return backupPath;
+        }
+        logger?.warn(`[krill-update] Backup pack succeeded but file not found: ${backupPath}`);
+        return null;
+    }
+    catch (error) {
+        logger?.warn(`[krill-update] Failed to backup ${pluginName}: ${error}`);
+        return null;
+    }
+}
+/**
+ * Rollback a plugin to a previous version from backup.
+ * Returns true if rollback succeeded and gateway is healthy.
+ */
+async function rollbackPlugin(pluginName, backupPath) {
+    const logger = pluginApi?.logger;
+    try {
+        logger?.warn(`[krill-update] 🚨 Rolling back ${pluginName} from ${backupPath}...`);
+        execSync(`npm install -g ${backupPath}`, { stdio: "pipe" });
+        logger?.info(`[krill-update] 🔄 Restarting gateway after rollback...`);
+        const restarted = restartGateway(pluginConfig.restartCommand);
+        if (!restarted) {
+            logger?.warn(`[krill-update] ⚠️ Restart failed after rollback — manual intervention needed`);
+            return false;
+        }
+        const isHealthy = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
+        if (isHealthy) {
+            logger?.info(`[krill-update] ✅ Rollback successful — gateway is healthy with previous version`);
+            return true;
+        }
+        logger?.warn(`[krill-update] ❌ Gateway unhealthy even after rollback — manual intervention needed`);
+        return false;
+    }
+    catch (error) {
+        logger?.warn(`[krill-update] ❌ Rollback failed: ${error}`);
+        return false;
+    }
+}
+/**
+ * Download and install a plugin update (with rollback on failure)
  */
 async function installUpdate(update) {
     const logger = pluginApi?.logger;
     logger?.info(`[krill-update] 📦 Installing ${update.plugin} v${update.version}...`);
+    const tempDir = "/tmp/krill-updates";
+    const rollbackDir = "/tmp/krill-updates/rollback";
     try {
-        const tempDir = "/tmp/krill-updates";
         if (!existsSync(tempDir)) {
             mkdirSync(tempDir, { recursive: true });
         }
         const tempFile = `${tempDir}/${update.plugin}-${update.version}.tgz`;
+        // Backup current version before installing
+        const backupPath = backupPlugin(update.plugin, rollbackDir);
+        const previousVersion = installedPlugins.get(update.plugin);
         // Generate auth header
         const authHeader = generateAuthHeader(update.plugin, update.version);
         if (!authHeader) {
@@ -129,7 +198,7 @@ async function installUpdate(update) {
         // Install via npm
         logger?.info(`[krill-update] Installing via npm...`);
         execSync(`npm install -g ${tempFile}`, { stdio: "pipe" });
-        // Cleanup
+        // Cleanup download
         unlinkSync(tempFile);
         // Update tracked version
         installedPlugins.set(update.plugin, update.version);
@@ -138,14 +207,33 @@ async function installUpdate(update) {
         logger?.info(`[krill-update] 🔄 Restarting gateway to load new plugin version...`);
         const restarted = restartGateway(pluginConfig.restartCommand);
         if (!restarted) {
-            logger?.warn(`[krill-update] ⚠️ Restart command failed after plugin install — manual restart needed`);
-        }
-        else {
-            const isHealthy = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
-            if (!isHealthy) {
-                logger?.warn(`[krill-update] ⚠️ Gateway may not be healthy after plugin update restart`);
+            logger?.warn(`[krill-update] ⚠️ Restart command failed — attempting rollback...`);
+            if (backupPath) {
+                await rollbackPlugin(update.plugin, backupPath);
+                installedPlugins.set(update.plugin, previousVersion || "unknown");
             }
+            return false;
         }
+        const isHealthy = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
+        if (!isHealthy) {
+            logger?.warn(`[krill-update] 🚨 Gateway unhealthy after update — rolling back ${update.plugin}...`);
+            if (backupPath) {
+                const rolledBack = await rollbackPlugin(update.plugin, backupPath);
+                installedPlugins.set(update.plugin, previousVersion || "unknown");
+                if (rolledBack) {
+                    logger?.info(`[krill-update] ↩️ Rolled back ${update.plugin} to previous version`);
+                }
+            }
+            else {
+                logger?.warn(`[krill-update] ❌ No backup available for rollback — manual intervention needed`);
+            }
+            return false;
+        }
+        // Success — clean up backup
+        if (backupPath && existsSync(backupPath)) {
+            unlinkSync(backupPath);
+        }
+        logger?.info(`[krill-update] 🎉 ${update.plugin} v${update.version} deployed and healthy!`);
         return true;
     }
     catch (error) {
