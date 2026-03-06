@@ -357,8 +357,12 @@ function installPreprocessor(client: any): boolean {
           auth: content["ai.krill.auth"],
         };
 
-        const senderId = event.sender || "";
-        const roomId = event.room_id || "";
+        const senderId = event.sender || event.getSender?.() || "";
+        const roomId = event.room_id || event.roomId || event.getRoomId?.() || "";
+        
+        if (!roomId) {
+          pluginApi?.logger.warn(`[krill-protocol] ⚠️ Empty roomId! Event keys: ${Object.keys(event).join(", ")}`);
+        }
 
         pluginApi?.logger.info(`[krill-protocol] ⚡ Intercepted: ${krillMsg.type} in ${roomId}`);
 

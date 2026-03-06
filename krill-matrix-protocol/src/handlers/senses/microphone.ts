@@ -41,7 +41,7 @@ function ensureDir(dirPath: string): void {
 }
 
 function getTranscriptsDir(ctx: SenseContext): string {
-  return path.join(ctx.config.storagePath, "transcripts");
+  return path.join(ctx.config.storagePath, "microphone", "transcripts");
 }
 
 function getPendingDir(ctx: SenseContext): string {

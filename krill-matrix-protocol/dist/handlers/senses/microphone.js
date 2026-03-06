@@ -31,7 +31,7 @@ function ensureDir(dirPath) {
     }
 }
 function getTranscriptsDir(ctx) {
-    return path_1.default.join(ctx.config.storagePath, "transcripts");
+    return path_1.default.join(ctx.config.storagePath, "microphone", "transcripts");
 }
 function getPendingDir(ctx) {
     return path_1.default.join(getTranscriptsDir(ctx), ".pending");
