@@ -1,5 +1,5 @@
 /**
- * Krill Matrix Protocol Plugin v1.2.0
+ * Krill Matrix Protocol Plugin
  *
  * Universal interceptor for all ai.krill.* messages.
  * Uses MatrixClient.addPreprocessor() from @openclaw/matrix to intercept

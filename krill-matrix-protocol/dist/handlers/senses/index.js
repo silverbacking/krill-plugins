@@ -8,6 +8,7 @@
 import { handleLocation } from "./location.js";
 import { handleAudio } from "./audio.js";
 import { handleCamera } from "./camera.js";
+import { handleMicrophone } from "./microphone.js";
 /**
  * Route a sense message to the appropriate handler.
  * Returns true if handled.
@@ -23,6 +24,9 @@ export async function handleSense(ctx) {
             return true;
         case "camera":
             await handleCamera(ctx);
+            return true;
+        case "microphone":
+            await handleMicrophone(ctx);
             return true;
         // Future senses:
         // case "email":
