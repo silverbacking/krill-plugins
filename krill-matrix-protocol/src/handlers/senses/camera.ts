@@ -111,9 +111,11 @@ function pruneCaptures(capturesDir: string, logger: any) {
 }
 
 export async function handleCamera(ctx: SenseContext): Promise<void> {
-  const senseData = ctx.content?.["ai.krill.sense"];
+  // ctx.content is already the unwrapped ai.krill.sense object
+  // (dispatcher does: content["ai.krill.sense"] || content)
+  const senseData = ctx.content;
   if (!senseData) {
-    ctx.logger.warn("[camera] Missing ai.krill.sense data");
+    ctx.logger.warn("[camera] Missing sense data");
     return;
   }
 
