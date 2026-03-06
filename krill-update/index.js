@@ -370,12 +370,12 @@ async function checkGatewayHealth(timeoutSeconds) {
     while (Date.now() - startTime < timeoutMs) {
         try {
             // Try to connect to the gateway's health endpoint or check process
-            const result = execSync("pgrep -f clawdbot", { stdio: "pipe" }).toString().trim();
+            const result = execSync("pgrep -f 'openclaw-gateway|clawdbot'", { stdio: "pipe" }).toString().trim();
             if (result) {
                 // Process is running, wait a bit more to ensure it's stable
                 await new Promise((r) => setTimeout(r, 3000));
                 // Check again
-                const result2 = execSync("pgrep -f clawdbot", { stdio: "pipe" }).toString().trim();
+                const result2 = execSync("pgrep -f 'openclaw-gateway|clawdbot'", { stdio: "pipe" }).toString().trim();
                 if (result2) {
                     logger?.info(`[krill-update] ✅ Gateway is healthy (PID: ${result2})`);
                     return true;
