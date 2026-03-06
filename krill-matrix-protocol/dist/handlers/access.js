@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Access Handler
  *
@@ -7,8 +8,19 @@
  * Works with both Krill App (via ai.krill.pair.*) and regular Matrix
  * clients (via text messages asking for PIN).
  */
-import fs from "fs";
-import path from "path";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.initAccessHandler = initAccessHandler;
+exports.isVerified = isVerified;
+exports.isPendingPin = isPendingPin;
+exports.handleAccess = handleAccess;
+exports.markVerified = markVerified;
+exports.revokeAccess = revokeAccess;
+exports.getVerifiedUsers = getVerifiedUsers;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 let options = null;
 let state = { verified: {}, pendingPin: {} };
 const DEFAULT_PIN_PROMPT = "🔐 Benvingut! Per verificar la teva identitat, introdueix el teu PIN de krillbot.network:";
@@ -21,10 +33,10 @@ const DEFAULT_PIN_BLOCKED = "🚫 Massa intents fallits. Contacta amb el propiet
 function loadState() {
     if (!options?.storagePath)
         return;
-    const statePath = path.join(options.storagePath, "access-state.json");
+    const statePath = path_1.default.join(options.storagePath, "access-state.json");
     try {
-        if (fs.existsSync(statePath)) {
-            state = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+        if (fs_1.default.existsSync(statePath)) {
+            state = JSON.parse(fs_1.default.readFileSync(statePath, "utf-8"));
         }
     }
     catch (error) {
@@ -37,13 +49,13 @@ function loadState() {
 function saveState() {
     if (!options?.storagePath)
         return;
-    const statePath = path.join(options.storagePath, "access-state.json");
+    const statePath = path_1.default.join(options.storagePath, "access-state.json");
     try {
-        const dir = path.dirname(statePath);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
+        const dir = path_1.default.dirname(statePath);
+        if (!fs_1.default.existsSync(dir)) {
+            fs_1.default.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        fs_1.default.writeFileSync(statePath, JSON.stringify(state, null, 2));
     }
     catch (error) {
         options?.logger.warn(`[access] Failed to save state: ${error}`);
@@ -52,7 +64,7 @@ function saveState() {
 /**
  * Initialize the access handler
  */
-export function initAccessHandler(opts) {
+function initAccessHandler(opts) {
     options = opts;
     loadState();
     options.logger.info(`[access] Initialized with ${Object.keys(state.verified).length} verified users`);
@@ -60,13 +72,13 @@ export function initAccessHandler(opts) {
 /**
  * Check if a user has completed PIN verification
  */
-export function isVerified(mxid) {
+function isVerified(mxid) {
     return !!state.verified[mxid];
 }
 /**
  * Check if a user is currently being prompted for PIN
  */
-export function isPendingPin(mxid) {
+function isPendingPin(mxid) {
     return !!state.pendingPin[mxid];
 }
 /**
@@ -106,7 +118,7 @@ async function verifyPinWithApi(mxid, pin) {
  * - { allowed: true } if user is verified
  * - { allowed: false, response: "..." } if user needs PIN or verification failed
  */
-export async function handleAccess(mxid, messageText) {
+async function handleAccess(mxid, messageText) {
     if (!options) {
         return { allowed: true }; // Handler not initialized, allow all
     }
@@ -186,7 +198,7 @@ export async function handleAccess(mxid, messageText) {
 /**
  * Mark a user as verified (for Krill App flow that uses ai.krill.pair.*)
  */
-export function markVerified(mxid, userId, email) {
+function markVerified(mxid, userId, email) {
     delete state.pendingPin[mxid];
     state.verified[mxid] = {
         verifiedAt: Date.now(),
@@ -199,7 +211,7 @@ export function markVerified(mxid, userId, email) {
 /**
  * Revoke access for a user
  */
-export function revokeAccess(mxid) {
+function revokeAccess(mxid) {
     delete state.verified[mxid];
     delete state.pendingPin[mxid];
     saveState();
@@ -208,6 +220,6 @@ export function revokeAccess(mxid) {
 /**
  * Get all verified users
  */
-export function getVerifiedUsers() {
+function getVerifiedUsers() {
     return Object.keys(state.verified);
 }

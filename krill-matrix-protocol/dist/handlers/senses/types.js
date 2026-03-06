@@ -1,4 +1,5 @@
+"use strict";
 /**
  * Shared types for sense handlers
  */
-export {};
+Object.defineProperty(exports, "__esModule", { value: true });

@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Health Check Handler
  *
@@ -8,6 +9,9 @@
  * - unresponsive: Gateway responds BUT LLM timeout/error
  * - offline: No response (detected by monitor timeout)
  */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleHealth = void 0;
+exports.markLlmActivity = markLlmActivity;
 // Track gateway start time for uptime
 const startTime = Date.now();
 // Track last LLM activity (set by message interceptor)
@@ -16,7 +20,7 @@ const LLM_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 minutes
 /**
  * Mark LLM as active (called when non-protocol message is received)
  */
-export function markLlmActivity() {
+function markLlmActivity() {
     lastLlmActivity = Date.now();
 }
 /**
@@ -37,7 +41,7 @@ function getLoad() {
         return undefined;
     }
 }
-export const handleHealth = {
+exports.handleHealth = {
     /**
      * Handle ai.krill.health.ping
      */

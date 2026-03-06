@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Audio Sense Handler
  *
@@ -20,40 +21,45 @@
  *     config.json             ← wake words, language, context window
  *     transcript-YYYY-MM-DD.md  ← daily transcript log
  */
-import fs from "fs";
-import path from "path";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleAudio = handleAudio;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 const DEFAULT_CONTEXT_WINDOW = 60; // seconds
 const MAX_DAILY_LINES = 5000;
 const recentTranscript = [];
 const MAX_BUFFER_ENTRIES = 200;
 function getAudioDir(ctx) {
-    const dir = path.join(ctx.config.storagePath, "audio");
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+    const dir = path_1.default.join(ctx.config.storagePath, "audio");
+    if (!fs_1.default.existsSync(dir)) {
+        fs_1.default.mkdirSync(dir, { recursive: true });
     }
     return dir;
 }
 function getSessionPath(ctx) {
-    return path.join(getAudioDir(ctx), "current-session.json");
+    return path_1.default.join(getAudioDir(ctx), "current-session.json");
 }
 function getConfigPath(ctx) {
-    return path.join(getAudioDir(ctx), "config.json");
+    return path_1.default.join(getAudioDir(ctx), "config.json");
 }
 function getDailyTranscriptPath(ctx) {
     const date = new Date().toISOString().split("T")[0];
-    return path.join(getAudioDir(ctx), `transcript-${date}.md`);
+    return path_1.default.join(getAudioDir(ctx), `transcript-${date}.md`);
 }
 function readJSON(filePath, fallback) {
     try {
-        if (fs.existsSync(filePath)) {
-            return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+        if (fs_1.default.existsSync(filePath)) {
+            return JSON.parse(fs_1.default.readFileSync(filePath, "utf-8"));
         }
     }
     catch { /* ignore */ }
     return fallback;
 }
 function writeJSON(filePath, data) {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    fs_1.default.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 /**
  * Add transcript text to the in-memory buffer
@@ -85,21 +91,21 @@ function appendToDaily(ctx, text, timestamp) {
         hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit"
     });
     // Create file with header if new
-    if (!fs.existsSync(filePath)) {
+    if (!fs_1.default.existsSync(filePath)) {
         const date = new Date().toISOString().split("T")[0];
-        fs.writeFileSync(filePath, `# Audio Transcript — ${date}\n\n`);
+        fs_1.default.writeFileSync(filePath, `# Audio Transcript — ${date}\n\n`);
     }
     // Check line count (rough)
     const maxLines = ctx.config.audio?.maxDailyLines ?? MAX_DAILY_LINES;
     try {
-        const stats = fs.statSync(filePath);
+        const stats = fs_1.default.statSync(filePath);
         if (stats.size > maxLines * 80) { // rough estimate ~80 chars/line
             ctx.logger.warn(`[senses/audio] Daily transcript exceeds max size, skipping append`);
             return;
         }
     }
     catch { /* ignore */ }
-    fs.appendFileSync(filePath, `[${time}] ${text}\n`);
+    fs_1.default.appendFileSync(filePath, `[${time}] ${text}\n`);
 }
 /**
  * Handle transcript chunk — silent storage, no agent notification
@@ -192,7 +198,7 @@ async function handleSession(ctx, kind, content) {
 /**
  * Main audio sense handler
  */
-export async function handleAudio(ctx) {
+async function handleAudio(ctx) {
     const content = ctx.content;
     const kind = content?.kind;
     if (!kind) {

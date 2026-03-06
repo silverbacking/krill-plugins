@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Microphone Sense Handler
  *
@@ -15,36 +16,41 @@
  *     <fileName>                          ← completed transcript files
  *     .pending/<sessionId>/part-N.txt     ← in-progress multi-part
  */
-import fs from "fs";
-import path from "path";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleMicrophone = handleMicrophone;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 /** Timeout for pending sessions: 30 minutes */
 const PENDING_TIMEOUT_MS = 30 * 60 * 1000;
 function ensureDir(dirPath) {
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
+    if (!fs_1.default.existsSync(dirPath)) {
+        fs_1.default.mkdirSync(dirPath, { recursive: true });
     }
 }
 function getTranscriptsDir(ctx) {
-    return path.join(ctx.config.storagePath, "transcripts");
+    return path_1.default.join(ctx.config.storagePath, "transcripts");
 }
 function getPendingDir(ctx) {
-    return path.join(getTranscriptsDir(ctx), ".pending");
+    return path_1.default.join(getTranscriptsDir(ctx), ".pending");
 }
 /**
  * Clean up expired pending sessions (>30 min old)
  */
 function cleanupExpiredSessions(ctx) {
     const pendingDir = getPendingDir(ctx);
-    if (!fs.existsSync(pendingDir))
+    if (!fs_1.default.existsSync(pendingDir))
         return;
     try {
-        const sessions = fs.readdirSync(pendingDir);
+        const sessions = fs_1.default.readdirSync(pendingDir);
         const now = Date.now();
         for (const sessionId of sessions) {
-            const sessionDir = path.join(pendingDir, sessionId);
-            const stat = fs.statSync(sessionDir);
+            const sessionDir = path_1.default.join(pendingDir, sessionId);
+            const stat = fs_1.default.statSync(sessionDir);
             if (now - stat.mtimeMs > PENDING_TIMEOUT_MS) {
-                fs.rmSync(sessionDir, { recursive: true, force: true });
+                fs_1.default.rmSync(sessionDir, { recursive: true, force: true });
                 ctx.logger.info(`[senses/microphone] 🗑️ Expired pending session: ${sessionId}`);
             }
         }
@@ -56,7 +62,7 @@ function cleanupExpiredSessions(ctx) {
 /**
  * Main microphone handler
  */
-export async function handleMicrophone(ctx) {
+async function handleMicrophone(ctx) {
     const event = ctx.content;
     if (!event.sessionId || !event.fileName || event.transcript === undefined) {
         ctx.logger.warn("[senses/microphone] Invalid event — missing sessionId, fileName, or transcript");
@@ -71,16 +77,16 @@ export async function handleMicrophone(ctx) {
         return;
     }
     // Multi-part: save this part
-    const sessionDir = path.join(getPendingDir(ctx), event.sessionId);
+    const sessionDir = path_1.default.join(getPendingDir(ctx), event.sessionId);
     ensureDir(sessionDir);
-    const partFile = path.join(sessionDir, `part-${event.part}.txt`);
-    fs.writeFileSync(partFile, event.transcript);
+    const partFile = path_1.default.join(sessionDir, `part-${event.part}.txt`);
+    fs_1.default.writeFileSync(partFile, event.transcript);
     ctx.logger.debug(`[senses/microphone] Saved part ${event.part} to ${partFile}`);
     if (!event.final) {
         return; // Wait for more parts
     }
     // Final part received — concatenate all parts
-    const partFiles = fs.readdirSync(sessionDir)
+    const partFiles = fs_1.default.readdirSync(sessionDir)
         .filter(f => f.startsWith("part-") && f.endsWith(".txt"))
         .sort((a, b) => {
         const numA = parseInt(a.replace("part-", "").replace(".txt", ""));
@@ -88,11 +94,11 @@ export async function handleMicrophone(ctx) {
         return numA - numB;
     });
     const fullTranscript = partFiles
-        .map(f => fs.readFileSync(path.join(sessionDir, f), "utf-8"))
+        .map(f => fs_1.default.readFileSync(path_1.default.join(sessionDir, f), "utf-8"))
         .join("");
     await saveAndUpload(ctx, fullTranscript, event);
     // Clean up pending session
-    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs_1.default.rmSync(sessionDir, { recursive: true, force: true });
     ctx.logger.debug(`[senses/microphone] Cleaned up pending session: ${event.sessionId}`);
 }
 /**
@@ -102,8 +108,8 @@ async function saveAndUpload(ctx, transcript, event) {
     const transcriptsDir = getTranscriptsDir(ctx);
     ensureDir(transcriptsDir);
     // Save to disk
-    const filePath = path.join(transcriptsDir, event.fileName);
-    fs.writeFileSync(filePath, transcript);
+    const filePath = path_1.default.join(transcriptsDir, event.fileName);
+    fs_1.default.writeFileSync(filePath, transcript);
     ctx.logger.info(`[senses/microphone] 💾 Saved transcript: ${filePath} (${transcript.length} bytes)`);
     // Upload to Matrix
     const client = ctx.matrixClient;

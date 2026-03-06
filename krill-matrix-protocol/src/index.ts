@@ -322,8 +322,15 @@ function installPreprocessor(client: any): boolean {
 
   const krillPreprocessor = {
     getSupportedEventTypes(): string[] {
-      // We want to see all room messages
-      return ["m.room.message"];
+      // Listen for both m.room.message (legacy) and custom ai.krill.sense.* event types
+      return [
+        "m.room.message",
+        "ai.krill.sense.camera",
+        "ai.krill.sense.camera.end",
+        "ai.krill.sense.location",
+        "ai.krill.sense.audio",
+        "ai.krill.sense.microphone",
+      ];
     },
 
     async processEvent(event: any, matrixClient: any): Promise<any> {
@@ -331,11 +338,21 @@ function installPreprocessor(client: any): boolean {
         const content = event?.content;
         if (!content) return;
 
-        const msgtype = content.msgtype;
-        if (typeof msgtype !== "string" || !msgtype.startsWith("ai.krill.")) return;
+        const eventType = event?.type || "";
+
+        // For custom event types (ai.krill.sense.*), use the event type directly
+        // For m.room.message, check msgtype field (legacy support)
+        let krillType: string;
+        if (eventType.startsWith("ai.krill.")) {
+          krillType = eventType;
+        } else {
+          const msgtype = content.msgtype;
+          if (typeof msgtype !== "string" || !msgtype.startsWith("ai.krill.")) return;
+          krillType = msgtype;
+        }
 
         const krillMsg = {
-          type: msgtype,
+          type: krillType,
           content: content["ai.krill.sense"] || content,
           auth: content["ai.krill.auth"],
         };

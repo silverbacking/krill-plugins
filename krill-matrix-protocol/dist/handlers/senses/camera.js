@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Camera Sense Handler
  *
@@ -15,8 +16,13 @@
  *       2026-03-01_132000.jpg
  *       2026-03-01_132005.jpg
  */
-import fs from "fs";
-import path from "path";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleCamera = handleCamera;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 const MAX_LOG_ENTRIES = 1000;
 const MAX_CAPTURES = 500; // Keep last 500 images, prune older
 /**
@@ -48,21 +54,21 @@ async function downloadMxc(mxcUrl, homeserverUrl, accessToken, logger) {
     }
 }
 function ensureDir(dirPath) {
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
+    if (!fs_1.default.existsSync(dirPath)) {
+        fs_1.default.mkdirSync(dirPath, { recursive: true });
     }
 }
 function readJson(filePath, fallback) {
     try {
-        if (fs.existsSync(filePath)) {
-            return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+        if (fs_1.default.existsSync(filePath)) {
+            return JSON.parse(fs_1.default.readFileSync(filePath, "utf-8"));
         }
     }
     catch { /* ignore */ }
     return fallback;
 }
 function writeJson(filePath, data) {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    fs_1.default.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 /**
  * Prune old captures if we exceed MAX_CAPTURES.
@@ -70,15 +76,15 @@ function writeJson(filePath, data) {
  */
 function pruneCaptures(capturesDir, logger) {
     try {
-        if (!fs.existsSync(capturesDir))
+        if (!fs_1.default.existsSync(capturesDir))
             return;
-        const files = fs.readdirSync(capturesDir)
+        const files = fs_1.default.readdirSync(capturesDir)
             .filter(f => f.endsWith(".jpg"))
             .sort(); // Sorted by name = sorted by timestamp
         if (files.length > MAX_CAPTURES) {
             const toDelete = files.slice(0, files.length - MAX_CAPTURES);
             for (const f of toDelete) {
-                fs.unlinkSync(path.join(capturesDir, f));
+                fs_1.default.unlinkSync(path_1.default.join(capturesDir, f));
             }
             logger.info(`[camera] Pruned ${toDelete.length} old captures`);
         }
@@ -87,7 +93,7 @@ function pruneCaptures(capturesDir, logger) {
         logger.warn(`[camera] Prune error: ${e.message}`);
     }
 }
-export async function handleCamera(ctx) {
+async function handleCamera(ctx) {
     // ctx.content is already the unwrapped ai.krill.sense object
     // (dispatcher does: content["ai.krill.sense"] || content)
     const senseData = ctx.content;
@@ -106,8 +112,8 @@ export async function handleCamera(ctx) {
     const sensitivity = senseData.sensitivity || "medium";
     const subtype = senseData.subtype || "motion";
     // Setup directories
-    const cameraDir = path.join(ctx.config.storagePath, "camera");
-    const capturesDir = path.join(cameraDir, "captures");
+    const cameraDir = path_1.default.join(ctx.config.storagePath, "camera");
+    const capturesDir = path_1.default.join(cameraDir, "captures");
     ensureDir(capturesDir);
     // Get homeserver URL and access token from config (passed from MatrixClient)
     const homeserverUrl = ctx.config.homeserverUrl;
@@ -127,14 +133,14 @@ export async function handleCamera(ctx) {
     const ts = new Date(timestamp);
     const fileName = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, "0")}-${String(ts.getDate()).padStart(2, "0")}_${String(ts.getHours()).padStart(2, "0")}${String(ts.getMinutes()).padStart(2, "0")}${String(ts.getSeconds()).padStart(2, "0")}.jpg`;
     // Save capture
-    const capturePath = path.join(capturesDir, fileName);
-    fs.writeFileSync(capturePath, imageData);
+    const capturePath = path_1.default.join(capturesDir, fileName);
+    fs_1.default.writeFileSync(capturePath, imageData);
     ctx.logger.info(`[camera] Saved capture: ${fileName} (${(imageData.length / 1024).toFixed(1)} KB)`);
     // Update latest.jpg
-    const latestPath = path.join(cameraDir, "latest.jpg");
-    fs.writeFileSync(latestPath, imageData);
+    const latestPath = path_1.default.join(cameraDir, "latest.jpg");
+    fs_1.default.writeFileSync(latestPath, imageData);
     // Update motion log
-    const logPath = path.join(cameraDir, "motion_log.json");
+    const logPath = path_1.default.join(cameraDir, "motion_log.json");
     const log = readJson(logPath, []);
     log.push({
         timestamp,

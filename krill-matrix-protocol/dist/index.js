@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Krill Matrix Protocol Plugin
  *
@@ -11,16 +12,20 @@
  *   3. Adds a preprocessor that detects ai.krill.* messages
  *   4. Preprocessor handles the message and blanks it so @openclaw/matrix ignores it
  */
-import fs from "fs";
-import path from "path";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 // Import handlers
-import { handlePairing } from "./handlers/pairing.js";
-import { handleVerify } from "./handlers/verify.js";
-import { handleHealth } from "./handlers/health.js";
-import { handleConfig, initConfigHandler } from "./handlers/config.js";
-import { initAccessHandler, markVerified } from "./handlers/access.js";
-import { handleAllowlist, initAllowlistHandler } from "./handlers/allowlist.js";
-import { handleSense } from "./handlers/senses/index.js";
+const pairing_js_1 = require("./handlers/pairing.js");
+const verify_js_1 = require("./handlers/verify.js");
+const health_js_1 = require("./handlers/health.js");
+const config_js_1 = require("./handlers/config.js");
+const access_js_1 = require("./handlers/access.js");
+const allowlist_js_1 = require("./handlers/allowlist.js");
+const index_js_1 = require("./handlers/senses/index.js");
 // Plugin config schema
 const configSchema = {
     type: "object",
@@ -139,16 +144,16 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
     }
     switch (type) {
         case "ai.krill.pair.request":
-            await handlePairing.request(pluginConfig, content, senderId, sendResponse);
+            await pairing_js_1.handlePairing.request(pluginConfig, content, senderId, sendResponse);
             return true;
         case "ai.krill.verify.request":
-            await handleVerify.request(pluginConfig, content, sendResponse);
+            await verify_js_1.handleVerify.request(pluginConfig, content, sendResponse);
             return true;
         case "ai.krill.health.ping":
-            await handleHealth.ping(pluginConfig, content, sendResponse);
+            await health_js_1.handleHealth.ping(pluginConfig, content, sendResponse);
             return true;
         case "ai.krill.config.update":
-            await handleConfig({
+            await (0, config_js_1.handleConfig)({
                 sender: senderId,
                 room_id: roomId,
                 event_id: content.request_id || `ev_${Date.now()}`,
@@ -156,26 +161,26 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
             });
             return true;
         case "ai.krill.allowlist":
-            await handleAllowlist(content, senderId, sendResponse);
+            await (0, allowlist_js_1.handleAllowlist)(content, senderId, sendResponse);
             return true;
         default:
             // Sense messages (ai.krill.sense.*)
             if (type.startsWith("ai.krill.sense.")) {
                 // Resolve storage path: config > workspace/state/location > ~/.openclaw/krill/location
                 const workspace = pluginApi?.config?.agents?.defaults?.workspace
-                    || path.join(process.env.HOME || "", ".openclaw", "krill");
+                    || path_1.default.join(process.env.HOME || "", ".openclaw", "krill");
                 // Extract Matrix credentials for media download (camera sense needs them)
                 const mc = findMatrixClient();
                 const hsUrl = mc?.baseUrl || mc?.homeserverUrl || "";
                 const token = mc?.accessToken || "";
                 const sensesConfig = {
                     storagePath: pluginConfig?.senses?.storagePath
-                        || path.join(workspace, "state", "location"),
+                        || path_1.default.join(workspace, "state", "location"),
                     location: pluginConfig?.senses?.location,
                     homeserverUrl: hsUrl,
                     accessToken: token,
                 };
-                return await handleSense({
+                return await (0, index_js_1.handleSense)({
                     type,
                     content,
                     senderId,
@@ -195,7 +200,7 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
             if (type.startsWith("ai.krill.pair.")) {
                 pluginApi?.logger.info(`[krill-protocol] Pairing sub-message: ${type} (acknowledged)`);
                 if (type === "ai.krill.pair.complete") {
-                    markVerified(senderId);
+                    (0, access_js_1.markVerified)(senderId);
                 }
                 return true;
             }
@@ -217,15 +222,15 @@ function findMatrixClient() {
             // System-wide OpenClaw (Linux packages, e.g., Kathy)
             "/usr/lib/node_modules/openclaw/extensions/matrix/src/matrix/active-client.js",
             // User-local OpenClaw (macOS, nvm, etc.)
-            path.join(process.env.HOME || "", "node/lib/node_modules/openclaw/extensions/matrix/src/matrix/active-client.js"),
+            path_1.default.join(process.env.HOME || "", "node/lib/node_modules/openclaw/extensions/matrix/src/matrix/active-client.js"),
             // User extensions directory
-            path.join(process.env.HOME || "", ".openclaw/extensions/matrix/src/matrix/active-client.js"),
+            path_1.default.join(process.env.HOME || "", ".openclaw/extensions/matrix/src/matrix/active-client.js"),
             // npm global
-            path.join(process.env.HOME || "", "node/lib/node_modules/@openclaw/matrix/src/matrix/active-client.js"),
+            path_1.default.join(process.env.HOME || "", "node/lib/node_modules/@openclaw/matrix/src/matrix/active-client.js"),
         ];
         for (const modulePath of possiblePaths) {
             try {
-                if (fs.existsSync(modulePath)) {
+                if (fs_1.default.existsSync(modulePath)) {
                     // Dynamic require — works because we're in the same process
                     const activeClientModule = require(modulePath);
                     const client = activeClientModule.getAnyActiveMatrixClient?.()
@@ -266,19 +271,36 @@ function installPreprocessor(client) {
     }
     const krillPreprocessor = {
         getSupportedEventTypes() {
-            // We want to see all room messages
-            return ["m.room.message"];
+            // Listen for both m.room.message (legacy) and custom ai.krill.sense.* event types
+            return [
+                "m.room.message",
+                "ai.krill.sense.camera",
+                "ai.krill.sense.camera.end",
+                "ai.krill.sense.location",
+                "ai.krill.sense.audio",
+                "ai.krill.sense.microphone",
+            ];
         },
         async processEvent(event, matrixClient) {
             try {
                 const content = event?.content;
                 if (!content)
                     return;
-                const msgtype = content.msgtype;
-                if (typeof msgtype !== "string" || !msgtype.startsWith("ai.krill."))
-                    return;
+                const eventType = event?.type || "";
+                // For custom event types (ai.krill.sense.*), use the event type directly
+                // For m.room.message, check msgtype field (legacy support)
+                let krillType;
+                if (eventType.startsWith("ai.krill.")) {
+                    krillType = eventType;
+                }
+                else {
+                    const msgtype = content.msgtype;
+                    if (typeof msgtype !== "string" || !msgtype.startsWith("ai.krill."))
+                        return;
+                    krillType = msgtype;
+                }
                 const krillMsg = {
-                    type: msgtype,
+                    type: krillType,
                     content: content["ai.krill.sense"] || content,
                     auth: content["ai.krill.auth"],
                 };
@@ -341,7 +363,7 @@ const plugin = {
         api.logger.info(`[krill-protocol] Loaded for gateway: ${config.gatewayId}`);
         // Initialize handlers
         const configSettings = config.config || {};
-        initConfigHandler({
+        (0, config_js_1.initConfigHandler)({
             configPath: configSettings.configPath,
             allowedConfigSenders: configSettings.allowedConfigSenders || [],
             restartCommand: configSettings.restartCommand,
@@ -353,8 +375,8 @@ const plugin = {
         });
         const accessSettings = config.access || {};
         if (accessSettings.enabled !== false) {
-            initAccessHandler({
-                storagePath: config.storagePath || path.join(process.env.HOME || "", ".openclaw", "krill"),
+            (0, access_js_1.initAccessHandler)({
+                storagePath: config.storagePath || path_1.default.join(process.env.HOME || "", ".openclaw", "krill"),
                 krillApiUrl: accessSettings.krillApiUrl || "https://api.krillbot.network",
                 maxPinAttempts: accessSettings.maxPinAttempts,
                 pinPromptMessage: accessSettings.pinPromptMessage,
@@ -365,15 +387,15 @@ const plugin = {
             });
         }
         const allowlistSettings = config.allowlist || {};
-        initAllowlistHandler({
+        (0, allowlist_js_1.initAllowlistHandler)({
             configPath: allowlistSettings.configPath,
             allowedSenders: allowlistSettings.allowedSenders || [],
             logger: api.logger,
         });
         if (config.storagePath) {
-            const dir = path.dirname(config.storagePath);
-            if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
+            const dir = path_1.default.dirname(config.storagePath);
+            if (!fs_1.default.existsSync(dir)) {
+                fs_1.default.mkdirSync(dir, { recursive: true });
             }
         }
         // Register a background service that installs the preprocessor
@@ -425,4 +447,4 @@ const plugin = {
         api.logger.info(`[krill-protocol] ✅ Plugin registered (v${pkgVersion} — preprocessor mode)`);
     },
 };
-export default plugin;
+exports.default = plugin;

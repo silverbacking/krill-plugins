@@ -1,15 +1,19 @@
+"use strict";
 /**
  * Config Update Handler
  *
  * Handles ai.krill.config.update messages from the Krill API.
  * Applies config patches to openclaw.json with backup and rollback.
  */
-import { execSync } from "child_process";
-import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.initConfigHandler = initConfigHandler;
+exports.handleConfig = handleConfig;
+const child_process_1 = require("child_process");
+const fs_1 = require("fs");
+const os_1 = require("os");
+const path_1 = require("path");
 let options = null;
-export function initConfigHandler(opts) {
+function initConfigHandler(opts) {
     options = opts;
 }
 /**
@@ -32,8 +36,8 @@ function deepMerge(target, source) {
  */
 function backupConfig(configPath) {
     const backupPath = configPath + ".bak." + Date.now();
-    if (existsSync(configPath)) {
-        copyFileSync(configPath, backupPath);
+    if ((0, fs_1.existsSync)(configPath)) {
+        (0, fs_1.copyFileSync)(configPath, backupPath);
     }
     return backupPath;
 }
@@ -41,9 +45,9 @@ function backupConfig(configPath) {
  * Restore config from backup
  */
 function restoreConfig(configPath, backupPath) {
-    if (existsSync(backupPath)) {
-        copyFileSync(backupPath, configPath);
-        unlinkSync(backupPath);
+    if ((0, fs_1.existsSync)(backupPath)) {
+        (0, fs_1.copyFileSync)(backupPath, configPath);
+        (0, fs_1.unlinkSync)(backupPath);
     }
 }
 /**
@@ -52,12 +56,12 @@ function restoreConfig(configPath, backupPath) {
 function applyConfigPatch(configPath, patch) {
     try {
         let config = {};
-        if (existsSync(configPath)) {
-            const content = readFileSync(configPath, "utf-8");
+        if ((0, fs_1.existsSync)(configPath)) {
+            const content = (0, fs_1.readFileSync)(configPath, "utf-8");
             config = JSON.parse(content);
         }
         const merged = deepMerge(config, patch);
-        writeFileSync(configPath, JSON.stringify(merged, null, 2));
+        (0, fs_1.writeFileSync)(configPath, JSON.stringify(merged, null, 2));
         return true;
     }
     catch (error) {
@@ -71,7 +75,7 @@ function applyConfigPatch(configPath, patch) {
 function restartGateway(restartCommand) {
     try {
         const cmd = restartCommand || "systemctl restart openclaw-gateway";
-        execSync(cmd, { timeout: 30000 });
+        (0, child_process_1.execSync)(cmd, { timeout: 30000 });
         return true;
     }
     catch (error) {
@@ -117,7 +121,7 @@ async function sendConfigUpdateResult(roomId, requestId, success, message) {
 /**
  * Handle ai.krill.config.update message
  */
-export async function handleConfig(event) {
+async function handleConfig(event) {
     if (!options) {
         console.error("[config] Handler not initialized!");
         return false;
@@ -140,7 +144,7 @@ export async function handleConfig(event) {
         await sendConfigUpdateResult(event.room_id, requestId, false, "Invalid config_patch");
         return true;
     }
-    const configPath = options.configPath || join(homedir(), ".openclaw", "openclaw.json");
+    const configPath = options.configPath || (0, path_1.join)((0, os_1.homedir)(), ".openclaw", "openclaw.json");
     const backupPath = backupConfig(configPath);
     // Apply the patch
     const patchApplied = applyConfigPatch(configPath, content.config_patch);

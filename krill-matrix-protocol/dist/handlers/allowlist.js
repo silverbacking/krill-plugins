@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Allowlist Handler
  *
@@ -15,13 +16,19 @@
  *   }
  * }
  */
-import fs from "fs";
-import path from "path";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.initAllowlistHandler = initAllowlistHandler;
+exports.handleAllowlist = handleAllowlist;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 let handlerConfig = {};
 /**
  * Initialize the allowlist handler
  */
-export function initAllowlistHandler(config) {
+function initAllowlistHandler(config) {
     handlerConfig = config;
     handlerConfig.logger?.info("[allowlist] Handler initialized");
 }
@@ -30,7 +37,7 @@ export function initAllowlistHandler(config) {
  */
 function getConfigPath() {
     return handlerConfig.configPath ||
-        path.join(process.env.HOME || "", ".openclaw", "openclaw.json");
+        path_1.default.join(process.env.HOME || "", ".openclaw", "openclaw.json");
 }
 /**
  * Read current OpenClaw config
@@ -38,7 +45,7 @@ function getConfigPath() {
 function readConfig() {
     const configPath = getConfigPath();
     try {
-        const content = fs.readFileSync(configPath, "utf-8");
+        const content = fs_1.default.readFileSync(configPath, "utf-8");
         return JSON.parse(content);
     }
     catch (error) {
@@ -52,7 +59,7 @@ function readConfig() {
 function writeConfig(config) {
     const configPath = getConfigPath();
     try {
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        fs_1.default.writeFileSync(configPath, JSON.stringify(config, null, 2));
         handlerConfig.logger?.info("[allowlist] Config updated (hot-reload will apply changes)");
         return true;
     }
@@ -82,7 +89,7 @@ function setAllowlist(config, allowlist) {
 /**
  * Handle ai.krill.allowlist message
  */
-export async function handleAllowlist(content, senderId, sendResponse) {
+async function handleAllowlist(content, senderId, sendResponse) {
     const { action, mxid, reason, contractId } = content;
     handlerConfig.logger?.info(`[allowlist] ${action} ${mxid} from ${senderId} (reason: ${reason || "none"})`);
     // Validate sender (only trusted sources can modify allowlist)
@@ -191,7 +198,7 @@ export async function handleAllowlist(content, senderId, sendResponse) {
         handlerConfig.logger?.info(`[allowlist] Contract: ${contractId} - ${action} ${mxid}`);
     }
 }
-export default {
+exports.default = {
     handle: handleAllowlist,
     init: initAllowlistHandler,
 };

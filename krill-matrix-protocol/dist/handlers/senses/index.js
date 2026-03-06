@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Senses Dispatcher
  *
@@ -5,28 +6,30 @@
  * Sense data is NOT forwarded to the LLM — it's stored to disk
  * and only significant events (geofence enter/exit) notify the agent.
  */
-import { handleLocation } from "./location.js";
-import { handleAudio } from "./audio.js";
-import { handleCamera } from "./camera.js";
-import { handleMicrophone } from "./microphone.js";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleSense = handleSense;
+const location_js_1 = require("./location.js");
+const audio_js_1 = require("./audio.js");
+const camera_js_1 = require("./camera.js");
+const microphone_js_1 = require("./microphone.js");
 /**
  * Route a sense message to the appropriate handler.
  * Returns true if handled.
  */
-export async function handleSense(ctx) {
+async function handleSense(ctx) {
     const senseType = ctx.type.replace("ai.krill.sense.", "");
     switch (senseType) {
         case "location":
-            await handleLocation(ctx);
+            await (0, location_js_1.handleLocation)(ctx);
             return true;
         case "audio":
-            await handleAudio(ctx);
+            await (0, audio_js_1.handleAudio)(ctx);
             return true;
         case "camera":
-            await handleCamera(ctx);
+            await (0, camera_js_1.handleCamera)(ctx);
             return true;
         case "microphone":
-            await handleMicrophone(ctx);
+            await (0, microphone_js_1.handleMicrophone)(ctx);
             return true;
         // Future senses:
         // case "email":

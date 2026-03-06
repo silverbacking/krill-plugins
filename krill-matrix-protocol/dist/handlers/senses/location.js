@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Location Sense Handler
  *
@@ -16,8 +17,13 @@
  *       2026-02-26.json     ← daily history (array of points)
  *       2026-02-25.json
  */
-import fs from "fs";
-import path from "path";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleLocation = handleLocation;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 const DEFAULT_THRESHOLD_METERS = 50;
 const GEOCODE_CACHE_MAX = 500;
 const NOMINATIM_USER_AGENT = "KrillBot/1.0 (krill-matrix-protocol)";
@@ -30,7 +36,7 @@ async function reverseGeocode(lat, lon, storagePath, logger) {
     // Round to ~100m precision for cache key (3 decimal places)
     const cacheKey = `${lat.toFixed(3)},${lon.toFixed(3)}`;
     // Check cache
-    const cachePath = path.join(storagePath, "geocache.json");
+    const cachePath = path_1.default.join(storagePath, "geocache.json");
     const cache = readJson(cachePath, {});
     if (cache[cacheKey]) {
         return cache[cacheKey].name;
@@ -96,22 +102,22 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 function ensureDir(dirPath) {
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
+    if (!fs_1.default.existsSync(dirPath)) {
+        fs_1.default.mkdirSync(dirPath, { recursive: true });
     }
 }
 function readJson(filePath, fallback) {
     try {
-        if (fs.existsSync(filePath)) {
-            return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+        if (fs_1.default.existsSync(filePath)) {
+            return JSON.parse(fs_1.default.readFileSync(filePath, "utf-8"));
         }
     }
     catch { /* corrupted file, use fallback */ }
     return fallback;
 }
 function writeJson(filePath, data) {
-    ensureDir(path.dirname(filePath));
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n");
+    ensureDir(path_1.default.dirname(filePath));
+    fs_1.default.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n");
 }
 function todayDateString() {
     // Use local date for file naming
@@ -121,7 +127,7 @@ function todayDateString() {
 /**
  * Main location handler
  */
-export async function handleLocation(ctx) {
+async function handleLocation(ctx) {
     const { content, logger, config } = ctx;
     const storagePath = config.storagePath;
     const threshold = config.location?.movementThresholdMeters ?? DEFAULT_THRESHOLD_METERS;
@@ -142,7 +148,7 @@ export async function handleLocation(ctx) {
         return;
     }
     // Read current position
-    const currentPath = path.join(storagePath, "current.json");
+    const currentPath = path_1.default.join(storagePath, "current.json");
     const current = readJson(currentPath, null);
     // Check if movement is significant
     let isSignificant = true;
@@ -178,8 +184,8 @@ export async function handleLocation(ctx) {
     };
     writeJson(currentPath, newCurrent);
     // 2. Append to daily history
-    const historyDir = path.join(storagePath, "history");
-    const historyPath = path.join(historyDir, `${todayDateString()}.json`);
+    const historyDir = path_1.default.join(storagePath, "history");
+    const historyPath = path_1.default.join(historyDir, `${todayDateString()}.json`);
     const history = readJson(historyPath, []);
     history.push(point);
     writeJson(historyPath, history);
@@ -190,7 +196,7 @@ export async function handleLocation(ctx) {
  * Get the name of the geofence the point is currently in (if any)
  */
 function getCurrentGeofence(point, storagePath) {
-    const geofencesPath = path.join(storagePath, "geofences.json");
+    const geofencesPath = path_1.default.join(storagePath, "geofences.json");
     const geofences = readJson(geofencesPath, {});
     for (const [id, gf] of Object.entries(geofences)) {
         const dist = distanceMeters(point.latitude, point.longitude, gf.latitude, gf.longitude);
@@ -206,8 +212,8 @@ function getCurrentGeofence(point, storagePath) {
 async function checkGeofences(point, ctx) {
     const { config, reply, logger } = ctx;
     const storagePath = config.storagePath;
-    const geofencesPath = path.join(storagePath, "geofences.json");
-    const statePath = path.join(storagePath, "geofence-state.json");
+    const geofencesPath = path_1.default.join(storagePath, "geofences.json");
+    const statePath = path_1.default.join(storagePath, "geofence-state.json");
     const geofences = readJson(geofencesPath, {});
     if (Object.keys(geofences).length === 0)
         return;
