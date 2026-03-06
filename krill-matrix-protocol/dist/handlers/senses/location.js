@@ -129,7 +129,8 @@ function todayDateString() {
  */
 async function handleLocation(ctx) {
     const { content, logger, config } = ctx;
-    const storagePath = config.storagePath;
+    const storagePath = path_1.default.join(config.storagePath, "location");
+    ensureDir(storagePath);
     const threshold = config.location?.movementThresholdMeters ?? DEFAULT_THRESHOLD_METERS;
     // Parse incoming location
     const point = {

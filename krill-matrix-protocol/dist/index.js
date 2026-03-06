@@ -175,7 +175,7 @@ async function handleKrillMessage(message, senderId, roomId, sendResponse) {
                 const token = mc?.accessToken || "";
                 const sensesConfig = {
                     storagePath: pluginConfig?.senses?.storagePath
-                        || path_1.default.join(workspace, "state", "location"),
+                        || path_1.default.join(workspace, "state"),
                     location: pluginConfig?.senses?.location,
                     homeserverUrl: hsUrl,
                     accessToken: token,

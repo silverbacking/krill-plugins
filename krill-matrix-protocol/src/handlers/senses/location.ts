@@ -143,7 +143,8 @@ function todayDateString(): string {
  */
 export async function handleLocation(ctx: SenseContext): Promise<void> {
   const { content, logger, config } = ctx;
-  const storagePath = config.storagePath;
+  const storagePath = path.join(config.storagePath, "location");
+  ensureDir(storagePath);
   const threshold = config.location?.movementThresholdMeters ?? DEFAULT_THRESHOLD_METERS;
   
   // Parse incoming location

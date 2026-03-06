@@ -220,7 +220,7 @@ async function handleKrillMessage(
         const token = mc?.accessToken || "";
         const sensesConfig: SensesConfig = {
           storagePath: (pluginConfig as any)?.senses?.storagePath 
-            || path.join(workspace, "state", "location"),
+            || path.join(workspace, "state"),
           location: (pluginConfig as any)?.senses?.location,
           homeserverUrl: hsUrl,
           accessToken: token,
