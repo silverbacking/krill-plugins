@@ -134,7 +134,18 @@ async function installUpdate(update) {
         // Update tracked version
         installedPlugins.set(update.plugin, update.version);
         logger?.info(`[krill-update] ✅ ${update.plugin} v${update.version} installed!`);
-        logger?.warn(`[krill-update] ⚠️ Gateway restart required to load new plugin version`);
+        // Restart gateway to load the new plugin version
+        logger?.info(`[krill-update] 🔄 Restarting gateway to load new plugin version...`);
+        const restarted = restartGateway(pluginConfig.restartCommand);
+        if (!restarted) {
+            logger?.warn(`[krill-update] ⚠️ Restart command failed after plugin install — manual restart needed`);
+        }
+        else {
+            const isHealthy = await checkGatewayHealth(pluginConfig.healthCheckTimeoutSeconds);
+            if (!isHealthy) {
+                logger?.warn(`[krill-update] ⚠️ Gateway may not be healthy after plugin update restart`);
+            }
+        }
         return true;
     }
     catch (error) {
