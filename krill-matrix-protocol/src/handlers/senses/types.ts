@@ -15,6 +15,8 @@ export interface SenseContext {
     error: (msg: string) => void;
   };
   config: SensesConfig;
+  /** Matrix client for uploading content and sending messages */
+  matrixClient?: any;
 }
 
 export interface SensesConfig {

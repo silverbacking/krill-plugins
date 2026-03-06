@@ -250,6 +250,7 @@ async function handleKrillMessage(
           reply: sendResponse,
           logger: pluginApi!.logger,
           config: sensesConfig,
+          matrixClient: mc,
         });
       }
       
