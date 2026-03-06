@@ -345,13 +345,28 @@ function installPreprocessor(client: any): boolean {
 
     async processEvent(event: any, matrixClient: any): Promise<any> {
       try {
-        const body = event?.content?.body;
-        if (!body || typeof body !== "string") return;
+        const content = event?.content;
+        if (!content) return;
 
-        // Quick check before JSON parsing
-        if (!body.startsWith('{"type":"ai.krill.')) return;
+        const msgtype = content.msgtype;
+        let krillMsg: { type: string; content: any; auth?: any } | null = null;
 
-        const krillMsg = parseKrillMessage(body);
+        // Route 1: msgtype is ai.krill.* (native krill events — camera, microphone, etc.)
+        if (typeof msgtype === "string" && msgtype.startsWith("ai.krill.")) {
+          krillMsg = {
+            type: msgtype,
+            content: content["ai.krill.sense"] || content,
+            auth: content["ai.krill.auth"],
+          };
+        }
+        // Route 2: JSON-encoded krill message in body (legacy protocol messages)
+        else {
+          const body = content.body;
+          if (!body || typeof body !== "string") return;
+          if (!body.startsWith('{"type":"ai.krill.')) return;
+          krillMsg = parseKrillMessage(body);
+        }
+
         if (!krillMsg) return;
 
         const senderId = event.sender || "";
