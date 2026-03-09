@@ -95,19 +95,31 @@ EOF
   # Create plugin dir on server if needed
   ssh $SSH_OPTS "$CENTRAL_HOST" "mkdir -p $CENTRAL_PLUGINS_DIR/$plugin" 2>/dev/null
 
-  # Clean old .tgz files on server (keep only the new one)
-  log "Cleaning old .tgz files on server..."
-  ssh $SSH_OPTS "$CENTRAL_HOST" "rm -f $CENTRAL_PLUGINS_DIR/$plugin/*.tgz $CENTRAL_PLUGINS_DIR/$plugin/*.tgz.sha256" 2>/dev/null
-  ok "Old packages removed"
+  # Clean plugin directory on server (remove everything except node_modules)
+  log "Cleaning old files on server..."
+  ssh $SSH_OPTS "$CENTRAL_HOST" "
+    cd $CENTRAL_PLUGINS_DIR/$plugin 2>/dev/null && \
+    find . -maxdepth 1 -not -name '.' -not -name 'node_modules' -exec rm -rf {} + 2>/dev/null
+  " 2>/dev/null
+  ok "Old files removed (node_modules preserved)"
 
-  # Upload new .tgz + latest.json
+  # Upload .tgz + latest.json
   scp $SSH_OPTS "$tgz_file" "$CENTRAL_HOST:$CENTRAL_PLUGINS_DIR/$plugin/" 2>/dev/null
   scp $SSH_OPTS "latest.json" "$CENTRAL_HOST:$CENTRAL_PLUGINS_DIR/$plugin/" 2>/dev/null
-  ok "Uploaded to $CENTRAL_PLUGINS_DIR/$plugin/"
 
-  # Also upload checksum file
+  # Upload checksum file
   echo "$checksum  $tgz_file" > "$tgz_file.sha256"
   scp $SSH_OPTS "$tgz_file.sha256" "$CENTRAL_HOST:$CENTRAL_PLUGINS_DIR/$plugin/" 2>/dev/null
+
+  # Extract ALL source files from .tgz to the plugin directory on server
+  # This ensures the API can read package.json, plugin manifests, etc.
+  log "Extracting source files to server..."
+  ssh $SSH_OPTS "$CENTRAL_HOST" "
+    cd $CENTRAL_PLUGINS_DIR/$plugin && \
+    tar xzf $tgz_file --strip-components=1 2>/dev/null && \
+    echo 'Extracted OK'
+  " 2>/dev/null
+  ok "Source files extracted"
 
   # 7. Verify API reflects the new version
   log "Verifying API..."
