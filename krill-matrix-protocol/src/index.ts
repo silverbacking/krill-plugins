@@ -509,12 +509,14 @@ const plugin = {
       },
     });
 
-    // Register HTTP handler (unchanged)
-    api.registerHttpHandler(async (req: any, res: any) => {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      if (!url.pathname.startsWith("/krill/")) return false;
-      return false;
-    });
+    // Register HTTP handler (backwards compatible: registerHttpHandler removed in OpenClaw 2026.3.x)
+    if (typeof api.registerHttpHandler === "function") {
+      api.registerHttpHandler(async (req: any, res: any) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        if (!url.pathname.startsWith("/krill/")) return false;
+        return false;
+      });
+    }
     
     const pkgVersion = require("../package.json").version ?? "unknown";
     api.logger.info(`[krill-protocol] ✅ Plugin registered (v${pkgVersion} — preprocessor mode)`);

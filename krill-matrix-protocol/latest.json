@@ -1,7 +1,7 @@
 {
   "plugin": "krill-matrix-protocol",
-  "version": "1.5.2",
-  "filename": "krill-matrix-protocol-1.5.2.tgz",
-  "checksum": "sha256:f48b565de745ef7c05550cb5a3a6fdb5eb918b5b48d0094b5f5f1d84e64d95d2",
-  "packaged_at": "2026-03-09T00:20:57Z"
+  "version": "1.5.3",
+  "filename": "krill-matrix-protocol-1.5.3.tgz",
+  "checksum": "sha256:fd956ed97a45ffea7c47344a6ac2daa47e369c1369c5d48e41d57f3c47a8ec5d",
+  "packaged_at": "2026-03-09T14:11:48Z"
 }
